@@ -32,6 +32,7 @@ async function route(req, env, pathname) {
   }
   if (pathname === '/api/config') {
     return Response.json({
+      version: env.CF_VERSION_METADATA?.id || 'dev',
       googleClientId: env.GOOGLE_CLIENT_ID || null,
       pushKey: env.VAPID_PRIVATE_KEY ? env.VAPID_PUBLIC_KEY || null : null,
       lyrics: env.LYRICS !== 'off',

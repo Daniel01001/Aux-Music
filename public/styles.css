@@ -275,6 +275,9 @@ h2 { font-size: 20px; }
 .results li { display: grid; grid-template-columns: 48px 1fr auto; gap: 10px; align-items: center; padding: 6px 0; }
 .results img { width: 48px; height: 48px; border-radius: 6px; object-fit: cover; }
 
+/* "New version" bar, above everything but the toasts */
+.update-bar { position: fixed; z-index: 55; left: 50%; transform: translateX(-50%); top: calc(var(--safe-t) + 10px); width: min(calc(100% - 32px), 528px); padding: 12px 16px; border: 0; border-radius: 14px; background: var(--accent); color: var(--on-accent); font-weight: 600; font-size: 14px; box-shadow: 0 10px 30px -10px rgb(0 0 0 / .5); animation: drop .25s ease-out; }
+
 /* Live lyrics */
 .pm-actions .btn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 .lyrics { --ly-h: clamp(190px, 36dvh, 380px); margin: -4px 0 20px; }

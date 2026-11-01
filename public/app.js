@@ -1151,5 +1151,22 @@
   }
   boot();
 
+  // ---------- staying up to date ----------
+  // An open app keeps running old code after a deploy. Check now and then; refresh straight away
+  // when nothing is playing, otherwise offer a button so the music isn't cut off mid-song.
+  async function checkForUpdate() {
+    if (!config?.version || config.version === 'dev') return;
+    try {
+      const latest = await fetch('/api/config', { cache: 'no-store' }).then((r) => r.json());
+      if (!latest.version || latest.version === config.version) return;
+      const busy = engine.state.playing || $('#modalRoot').innerHTML || document.activeElement?.matches('input, textarea');
+      if (!busy) return location.reload();
+      $('#updateBar').classList.remove('hidden');
+    } catch {}
+  }
+  $('#updateBar').onclick = () => location.reload();
+  setInterval(checkForUpdate, 3 * 60_000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkForUpdate(); });
+
   if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 })();
