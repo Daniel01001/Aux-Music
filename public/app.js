@@ -99,7 +99,7 @@
           <p class="lede">Short playlists anyone can see. Spend a credit to put a song on someone else's list, and listen together in sync.</p>
         </div>
         <ol class="how">
-          <li><span><b>Make a playlist</b> of 5 to 10 songs from YouTube Music.</span></li>
+          <li><span><b>Make a playlist</b> of 5 to 10 songs from YouTube Music or independent artists.</span></li>
           <li><span><b>Add songs to other people's playlists.</b> It costs 1 credit. Listen to songs others added to earn credits back.</span></li>
           <li><span><b>Sync</b> with a friend by their ID and hear the same song at the same moment.</span></li>
         </ol>`;

@@ -15,7 +15,11 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Hub"] }],
   "d1_databases": [
     { "binding": "DB", "database_name": "aux", "database_id": "418a533a-e741-45c8-911a-7158947d793c", "migrations_dir": "migrations" }
-  ]
-  // Set in the dashboard or with `wrangler secret put`, not here:
-  //   YT_API_KEY (secret), GOOGLE_CLIENT_ID, ANDROID_PACKAGE, ANDROID_SHA256
+  ],
+  // Public values only. The OAuth client ID is visible to every browser anyway.
+  "vars": {
+    "GOOGLE_CLIENT_ID": "632209402259-76jbita286ahuhf4257c2j4vpg12pglf.apps.googleusercontent.com"
+  }
+  // Set with `wrangler secret put` or in the dashboard, not here:
+  //   YT_API_KEY (secret), ANDROID_PACKAGE, ANDROID_SHA256
 }
