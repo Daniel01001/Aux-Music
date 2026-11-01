@@ -100,13 +100,46 @@ h2 { font-size: 20px; }
 .pl-head .cover { width: 132px; }
 .pl-head h1 { font-size: 26px; margin-top: 4px; overflow-wrap: anywhere; }
 .pl-owner { display: inline-flex; gap: 8px; align-items: center; margin-top: 8px; font-size: 14px; color: var(--muted); }
-.back { display: inline-flex; align-items: center; gap: 2px; color: var(--muted); padding: 4px 16px 0 10px; font-size: 14px; }
+.back { display: inline-flex; align-items: center; gap: 2px; color: var(--muted); padding: 4px 16px 0 10px; font-size: 14px; background: none; border: 0; }
+.btn.icon-only { width: 44px; padding: 0; }
 .back svg { width: 20px; height: 20px; }
 .songs { list-style: none; margin: 0; padding: 0; }
 .song { display: grid; grid-template-columns: 56px 1fr auto; gap: 12px; align-items: center; padding: 8px 16px; border-radius: var(--r-sm); }
 .song:active { background: var(--surface); }
 .song.now .st { color: var(--accent); }
-.song .thumb { width: 56px; height: 56px; border-radius: 8px; object-fit: cover; background: var(--surface-2); }
+.song .thumb { width: 56px; height: 56px; border-radius: 8px; object-fit: cover; background: var(--surface-2); display: block; }
+.thumb-wrap { position: relative; display: block; cursor: pointer; }
+
+/* Now-playing bars over the cover of whatever is playing; they rest when paused. */
+.eq { display: none; position: absolute; inset: 0; border-radius: 8px; background: rgb(0 0 0 / .45); align-items: flex-end; justify-content: center; gap: 3px; padding-bottom: 30%; }
+.now .eq { display: flex; }
+.eq i { width: 4px; height: 30%; border-radius: 2px; background: var(--accent); transform-origin: bottom; }
+.is-playing .eq i { animation: eq .9s ease-in-out infinite alternate; }
+.eq i:nth-child(2) { animation-delay: -.3s; } .eq i:nth-child(3) { animation-delay: -.6s; }
+@keyframes eq { from { transform: scaleY(.35); } to { transform: scaleY(1.4); } }
+
+/* Discover row */
+.disc-card { flex: 0 0 132px; scroll-snap-align: start; position: relative; min-width: 0; }
+.disc-art { display: block; position: relative; width: 132px; height: 132px; padding: 0; border: 0; border-radius: var(--r); overflow: hidden; background: var(--surface-2); }
+.disc-art img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .3s ease; }
+.disc-art:active img { transform: scale(.97); }
+.disc-art .eq { border-radius: 0; }
+.disc-save { position: absolute; top: 96px; right: 6px; width: 30px; height: 30px; border-radius: 50%; border: 0; display: grid; place-items: center; background: rgb(0 0 0 / .6); color: #fff; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.disc-save svg { width: 18px; height: 18px; }
+.disc-card .t { font-weight: 600; font-size: 14px; margin-top: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.disc-card .s { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.disc-card.now .t { color: var(--accent); }
+
+/* Save-to-playlist picker */
+.pick-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.pick-list button { width: 100%; display: grid; grid-template-columns: 52px 1fr; gap: 12px; align-items: center; padding: 6px; border: 0; border-radius: 12px; background: none; text-align: left; }
+.pick-list button:active:not(:disabled) { background: var(--surface-2); }
+.pick-list button:disabled { opacity: .45; cursor: default; }
+.pick-list .cover { width: 52px; border-radius: 8px; }
+.pick-list .cover.new { display: grid; place-items: center; border: 1.5px dashed var(--line); background: none; color: var(--muted); }
+.pick-list .pk { display: flex; flex-direction: column; min-width: 0; }
+.pick-list .t { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pick-list .s { font-size: 13px; color: var(--muted); }
 .song .st { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .song .sa { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .song .txt { min-width: 0; cursor: pointer; }
@@ -168,6 +201,11 @@ h2 { font-size: 20px; }
 .player.mini .player-meta { padding: 0 6px 0 12px; cursor: pointer; }
 .player.full { top: 0; bottom: 0; overflow-y: auto; padding: calc(var(--safe-t) + 6px) 16px calc(var(--safe-b) + 24px); background: var(--bg); }
 .player.full .pm-mini-controls { display: none; }
+/* The song's cover, blurred, tints the full player. */
+.player.full::before { content: ""; position: fixed; inset: -60px; z-index: -1; background: var(--art, none) center / cover no-repeat; filter: blur(60px) saturate(1.5); opacity: .38; pointer-events: none; transition: background-image .4s; }
+:root[data-theme="paper"] .player.full::before { opacity: .22; }
+.pm-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 2px 0 10px; min-height: 36px; }
+.pm-actions .btn { height: 36px; padding: 0 14px; margin-left: auto; background: color-mix(in srgb, var(--surface) 70%, transparent); }
 .player.full .video-wrap { width: 100%; aspect-ratio: 16 / 9; border-radius: var(--r); }
 .player.full .player-meta { padding: 18px 0 8px; }
 .player.full .pm-title { font-family: var(--font-display); font-size: 22px; white-space: normal; }
@@ -184,7 +222,7 @@ h2 { font-size: 20px; }
 .player.full .video-wrap.audio { aspect-ratio: 1; max-width: 340px; margin: 0 auto; }
 
 /* Two-way switch (song source) */
-.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; border-radius: 999px; background: var(--surface-2); }
+.seg { display: grid; grid-template-columns: repeat(var(--n, 2), 1fr); gap: 4px; padding: 4px; border-radius: 999px; background: var(--surface-2); }
 .seg button { height: 36px; border: 0; border-radius: 999px; background: none; color: var(--muted); font-weight: 600; font-size: 13px; }
 .seg button[aria-selected="true"] { background: var(--surface); color: var(--text); box-shadow: 0 1px 0 var(--line); }
 

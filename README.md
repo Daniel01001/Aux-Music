@@ -10,6 +10,9 @@ Playlists hold **songs**, not videos. Each song has a source:
 
 - **YouTube Music** (`yt:`): mainstream catalogue. It plays in YouTube's embedded player, which has to stay visible and stops when the screen is off. Search shows YouTube Music's official audio uploads ("Topic" channels) first, labelled **Song**.
 - **Audius** (`au:`): independent artists, streamed as plain audio. These songs keep playing with the screen off and show on the lock screen.
+- **Jamendo** (`jm:`): independent Creative Commons music, also plain audio with background play. It's off until `JAMENDO_CLIENT_ID` is set. Jamendo's free API covers non-commercial use only, so a paid Aux would need their commercial licence. The player links each song's CC licence for attribution.
+
+Home has a **Fresh finds** row of trending Audius (and Jamendo) songs, which the server rebuilds every hour. You can save any song you hear to one of your own playlists, which is always free.
 
 ## Stack
 
@@ -28,7 +31,7 @@ npm run db:local     # create the local database
 npx wrangler dev     # http://localhost:8787
 ```
 
-For local YouTube search, put `YT_API_KEY=...` in a `.dev.vars` file. Git ignores it.
+Local settings go in a `.dev.vars` file, which git ignores. Use `YT_API_KEY=...` for YouTube search and `JAMENDO_CLIENT_ID=...` for Jamendo. Set `GOOGLE_CLIENT_ID=` (empty) to get the quick ID signup instead of Google.
 
 ## Deploy
 
@@ -39,7 +42,8 @@ npm run deploy       # applies new D1 migrations, then deploys the Worker
 Settings live on the `aux-music` Worker in the Cloudflare dashboard (Settings → Variables and Secrets). They aren't in `wrangler.jsonc`, so a deploy doesn't wipe them:
 
 - `YT_API_KEY` (secret): turns on YouTube search. Set it with `npx wrangler secret put YT_API_KEY`.
-- `GOOGLE_CLIENT_ID`: turns on Sign in with Google and turns off the plain ID signup.
+- `GOOGLE_CLIENT_ID`: turns on Sign in with Google and turns off the plain ID signup. Set in `wrangler.jsonc`.
+- `JAMENDO_CLIENT_ID` (secret): turns on Jamendo. Get one free at devportal.jamendo.com, then run `npx wrangler secret put JAMENDO_CLIENT_ID`.
 - `ANDROID_PACKAGE`, `ANDROID_SHA256`: the Android app's package name and signing-key fingerprint(s), served at `/.well-known/assetlinks.json`.
 
 ## How sync works

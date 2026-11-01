@@ -8,6 +8,7 @@ const MAX_SONGS = 10;
 const INVITE_TTL = 60_000;
 const LEAVE_GRACE = 15_000; // a page refresh shouldn't drop you from a sync
 const AUDIUS = 'https://api.audius.co/v1';
+const JAMENDO = 'https://api.jamendo.com/v3.0';
 const APP_NAME = 'aux-music';
 const SEARCH_TTL = 24 * 3600_000;
 
@@ -25,7 +26,7 @@ const decode = (s) => String(s).replace(/&amp;/g, '&').replace(/&quot;/g, '"').r
 
 // ---------- tracks ----------
 const ytArt = (id) => `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
-const trackOut = (r) => ({ id: r.id, source: r.source, sourceId: r.source_id, title: r.title, author: r.author, art: r.art });
+const trackOut = (r) => ({ id: r.id, source: r.source, sourceId: r.source_id, title: r.title, author: r.author, art: r.art, ...(r.license ? { license: r.license } : {}) });
 
 function parseVideoId(input) {
   const s = String(input || '').trim();
@@ -41,6 +42,8 @@ function parseVideoId(input) {
   return null;
 }
 const isAudiusUrl = (s) => { try { return new URL(String(s).trim()).hostname.endsWith('audius.co'); } catch { return false; } };
+// jamendo.com/track/1234567/some-slug
+const jamendoId = (s) => { try { const u = new URL(String(s).trim()); return u.hostname.endsWith('jamendo.com') ? u.pathname.match(/\/track\/(\d+)/)?.[1] || null : null; } catch { return null; } };
 
 async function fetchJson(url, ms = 5000) {
   const r = await fetch(url, { signal: AbortSignal.timeout(ms) });
@@ -53,6 +56,11 @@ const audiusTrack = (t) => t && ({
   art: t.artwork?.['480x480'] || t.artwork?.['150x150'] || '', duration: t.duration,
   playable: t.is_streamable !== false && !t.is_stream_gated && !t.is_delete,
 });
+const jamendoTrack = (t) => t && ({
+  id: `jm:${t.id}`, source: 'jm', sourceId: String(t.id), title: t.name, author: t.artist_name || '',
+  art: t.image || t.album_image || '', duration: t.duration, license: t.license_ccurl || null, playable: !!t.audio,
+});
+const publicTrack = ({ playable, duration, ...t }) => t;
 
 // ---------- Durable Object ----------
 export class Hub extends DurableObject {
@@ -143,6 +151,14 @@ export class Hub extends DurableObject {
       if (!t.playable) throw new Error("That Audius song can't be streamed. Try another.");
       return t;
     }
+    if (source === 'jm') {
+      if (!this.env.JAMENDO_CLIENT_ID) throw new Error('Jamendo is not switched on yet.');
+      if (!/^\d+$/.test(sourceId)) throw new Error("Couldn't find that song on Jamendo.");
+      const j = await fetchJson(`${JAMENDO}/tracks/?client_id=${this.env.JAMENDO_CLIENT_ID}&format=json&imagesize=300&id=${sourceId}`).catch(() => null);
+      const t = jamendoTrack(j?.results?.[0]);
+      if (!t?.playable) throw new Error("Couldn't find that song on Jamendo.");
+      return t;
+    }
     if (source === 'yt') {
       if (!/^[\w-]{11}$/.test(sourceId)) throw new Error('That link does not look like a YouTube or YouTube Music song.');
       if (this.env.YT_API_KEY) {
@@ -166,8 +182,10 @@ export class Hub extends DurableObject {
       if (!j?.data?.id || !j.data.title) throw new Error('That Audius link is not a song.');
       return this.resolveTrack('au', j.data.id);
     }
+    const jm = jamendoId(input);
+    if (jm) return this.resolveTrack('jm', jm);
     const vid = parseVideoId(input);
-    if (!vid) throw new Error('Paste a YouTube, YouTube Music or Audius song link.');
+    if (!vid) throw new Error('Paste a YouTube, YouTube Music, Audius or Jamendo song link.');
     return this.resolveTrack('yt', vid);
   }
 
@@ -183,7 +201,13 @@ export class Hub extends DurableObject {
     if (source === 'au') {
       return this.cached(`au:${q.toLowerCase()}`, 6 * 3600_000, async () => {
         const j = await fetchJson(`${AUDIUS}/tracks/search?query=${encodeURIComponent(q)}&limit=15&app_name=${APP_NAME}`);
-        return (j?.data || []).map(audiusTrack).filter((t) => t.playable).slice(0, 10).map(({ playable, duration, ...t }) => t);
+        return (j?.data || []).map(audiusTrack).filter((t) => t.playable).slice(0, 10).map(publicTrack);
+      });
+    }
+    if (source === 'jm') {
+      return this.cached(`jm:${q.toLowerCase()}`, 6 * 3600_000, async () => {
+        const j = await fetchJson(`${JAMENDO}/tracks/?client_id=${this.env.JAMENDO_CLIENT_ID}&format=json&imagesize=300&limit=10&boost=popularity_total&search=${encodeURIComponent(q)}`);
+        return (j?.results || []).map(jamendoTrack).filter((t) => t.playable).map(publicTrack);
       });
     }
     // search.list costs 100 quota units, so every query is cached for a day.
@@ -197,6 +221,24 @@ export class Hub extends DurableObject {
         official: / - Topic$/.test(i.snippet.channelTitle),
       }));
       return [...list.filter((t) => t.official), ...list.filter((t) => !t.official)];
+    });
+  }
+
+  // Fresh songs that play with the screen off, for the Discover row on Home. Refreshed hourly.
+  async discover() {
+    return this.cached('discover', 3600_000, async () => {
+      const [au, jm] = await Promise.all([
+        fetchJson(`${AUDIUS}/tracks/trending?time=week&limit=30&app_name=${APP_NAME}`).catch(() => null),
+        this.env.JAMENDO_CLIENT_ID
+          ? fetchJson(`${JAMENDO}/tracks/?client_id=${this.env.JAMENDO_CLIENT_ID}&format=json&imagesize=300&limit=12&order=popularity_week`).catch(() => null)
+          : null,
+      ]);
+      const a = (au?.data || []).map(audiusTrack).filter((t) => t.playable && t.duration > 60 && t.duration < 600).slice(0, 12);
+      const b = (jm?.results || []).map(jamendoTrack).filter((t) => t.playable);
+      // Alternate the two sources so the row doesn't feel like one catalogue.
+      const mixed = [];
+      for (let i = 0; i < Math.max(a.length, b.length); i++) { if (a[i]) mixed.push(a[i]); if (b[i]) mixed.push(b[i]); }
+      return mixed.slice(0, 16).map(publicTrack);
     });
   }
 
@@ -272,11 +314,16 @@ export class Hub extends DurableObject {
 
     if (m === 'GET' && path === '/api/search') {
       const q = String(url.searchParams.get('q') || '').trim().slice(0, 100);
-      const source = url.searchParams.get('source') === 'au' ? 'au' : 'yt';
-      if (source === 'yt' && !this.env.YT_API_KEY) return json({ enabled: false, results: [] });
+      const source = ['au', 'jm'].includes(url.searchParams.get('source')) ? url.searchParams.get('source') : 'yt';
+      if ((source === 'yt' && !this.env.YT_API_KEY) || (source === 'jm' && !this.env.JAMENDO_CLIENT_ID)) return json({ enabled: false, results: [] });
       if (!q) return json({ enabled: true, results: [] });
       try { return json({ enabled: true, results: await this.search(q, source) }); }
       catch { return fail(502, 'Song search is unavailable right now. Paste a link instead.'); }
+    }
+
+    if (m === 'GET' && path === '/api/discover') {
+      try { return json({ tracks: await this.discover() }); }
+      catch { return json({ tracks: [] }); }
     }
 
     p = path.match(/^\/api\/playlists\/([0-9a-f]{10})\/songs$/);
@@ -329,9 +376,9 @@ export class Hub extends DurableObject {
     }
     try {
       await this.db.batch([
-        this.db.prepare(`INSERT INTO tracks (id, source, source_id, title, author, art, duration, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(id) DO UPDATE SET title = excluded.title, author = excluded.author, art = excluded.art`)
-          .bind(track.id, track.source, track.sourceId, String(track.title).slice(0, 160), String(track.author).slice(0, 100), track.art, track.duration || null, now),
+        this.db.prepare(`INSERT INTO tracks (id, source, source_id, title, author, art, duration, license, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET title = excluded.title, author = excluded.author, art = excluded.art, license = excluded.license`)
+          .bind(track.id, track.source, track.sourceId, String(track.title).slice(0, 160), String(track.author).slice(0, 100), track.art, track.duration || null, track.license || null, now),
         this.db.prepare('INSERT INTO playlist_songs (playlist_id, track_id, added_by, added_at) VALUES (?, ?, ?, ?)').bind(playlistId, track.id, isOwner ? null : me.id, now),
         ...(isOwner ? [] : [this.db.prepare('INSERT INTO credit_ledger (user_id, delta, reason, ref, at) VALUES (?, -1, ?, ?, ?)').bind(me.id, 'add_song', `${playlistId}:${track.id}`, now)]),
       ]);
@@ -480,13 +527,13 @@ export class Hub extends DurableObject {
 
     if (m.type === 'leave') { this.leaveRoom(uid); return this.persist(); }
     if (m.type === 'load') {
-      // The queue always comes from the stored playlist, never from the client.
-      const pl = await this.playlist(String(m.playlistId || ''));
-      const queue = (pl?.songs || []).map(({ addedBy, addedAt, ...t }) => t);
+      // The queue always comes from a stored playlist or the Discover row, never from the client.
+      const pl = m.discover ? null : await this.playlist(String(m.playlistId || ''));
+      const queue = m.discover ? await this.discover() : (pl?.songs || []).map(({ addedBy, addedAt, ...t }) => t);
       const index = Math.max(0, Math.min(queue.length - 1, m.index | 0));
       if (!queue[index]) return;
       // A start time in the future gives every phone a moment to load before the clock starts.
-      Object.assign(st, { queue, index, playlistId: pl.id, track: queue[index], playing: true, position: 0, ref: now + 1500 });
+      Object.assign(st, { queue, index, playlistId: pl?.id || null, track: queue[index], playing: true, position: 0, ref: now + 1500 });
     } else if (m.type === 'pause') {
       Object.assign(st, { position: Math.max(0, Number(m.position) || positionNow()), playing: false, ref: now });
     } else if (m.type === 'resume') {

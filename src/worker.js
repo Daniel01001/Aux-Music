@@ -15,7 +15,9 @@ export default {
         target: { namespace: 'android_app', package_name: env.ANDROID_PACKAGE, sha256_cert_fingerprints: fingerprints },
       }] : []);
     }
-    if (pathname === '/api/config') return Response.json({ googleClientId: env.GOOGLE_CLIENT_ID || null });
+    if (pathname === '/api/config') {
+      return Response.json({ googleClientId: env.GOOGLE_CLIENT_ID || null, sources: { yt: !!env.YT_API_KEY, au: true, jm: !!env.JAMENDO_CLIENT_ID } });
+    }
     if (pathname.startsWith('/api/') || pathname === '/ws') return env.HUB.get(env.HUB.idFromName('hub')).fetch(req);
     return env.ASSETS.fetch(req);
   },

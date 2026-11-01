@@ -5,7 +5,9 @@
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   // A song: { id: "yt:<videoId>" | "au:<audiusId>", source, sourceId, title, author, art }
   const art = (s) => esc(s?.art || '');
-  const SOURCE_NAME = { yt: 'YouTube Music', au: 'Audius' };
+  const SOURCE_NAME = { yt: 'YouTube Music', au: 'Audius', jm: 'Jamendo' };
+  const srcTag = (s) => (s.source && s.source !== 'yt' ? `<span class="tag">${SOURCE_NAME[s.source]}</span> ` : '');
+  const eqBars = '<span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>';
   const hue = (s) => [...String(s)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
   const avatar = (u, size = '') => `<span class="avatar ${size} ${u?.online ? 'online' : ''}" style="--h:${hue(u?.id || '?')}">${esc((u?.name || u?.id || '?')[0])}</span>`;
   const fmt = (t) => { t = Math.max(0, Math.floor(t || 0)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
@@ -78,16 +80,26 @@
     } catch (e) { view.innerHTML = `<div class="empty-state"><h3>Couldn't load this</h3><p>${esc(e.message)}</p></div>`; }
     window.scrollTo(0, 0);
   }
-  window.addEventListener('hashchange', () => { collapsePlayer(); route(); });
+  // Our own history of screens, so Back never leaves the app when a link opened it directly.
+  const trail = [location.hash];
+  window.addEventListener('hashchange', () => {
+    if (trail.length > 1 && trail[trail.length - 2] === location.hash) trail.pop(); else trail.push(location.hash);
+    collapsePlayer(); route();
+  });
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('[data-back]')) return;
+    if (trail.length > 1) history.back(); else location.replace('#home');
+  });
 
   // ---------- onboarding ----------
   let config = null;
+  const loadConfig = async () => (config ||= await fetch('/api/config').then((r) => r.json()).catch(() => ({})));
   const loadScript = (src) => new Promise((ok, fail) => { const s = document.createElement('script'); s.src = src; s.async = true; s.onload = ok; s.onerror = fail; document.head.append(s); });
   function signedIn(j) { token = j.token; store.set('aux-token', token); me = j.user; boot(); }
 
   async function renderOnboard() {
     document.body.classList.add('no-tabs');
-    if (!config) config = await fetch('/api/config').then((r) => r.json()).catch(() => ({}));
+    await loadConfig();
     if (config.googleClientId) return renderGoogleOnboard();
     renderIdOnboard();
   }
@@ -184,11 +196,29 @@
         </div>
       </section>
       ${room ? syncBanner() : ''}
+      <section class="section" id="disc" hidden>
+        <div class="section-head"><div><h2>Fresh finds</h2><div class="small muted">Independent artists. Keeps playing with your screen off.</div></div></div>
+        <div class="rail" id="discRail"></div>
+      </section>
       <section class="section">
         <div class="section-head"><h2>From people</h2><a class="link-btn" href="#search">Find someone</a></div>
         ${feed.others.length ? `<div class="feed">${feed.others.map(feedCard).join('')}</div>` : `<div class="empty-state">No one else has a playlist yet.</div>`}
       </section>`;
     $('#newPl').onclick = newPlaylist;
+    // Discover loads after the page so Home appears straight away.
+    api('/api/discover').then(({ tracks }) => {
+      const rail = $('#discRail');
+      if (!rail || !tracks.length) return;
+      rail.innerHTML = tracks.map((t, i) => `
+        <div class="disc-card ${engine.state.track?.id === t.id ? 'now' : ''}" data-id="${esc(t.id)}">
+          <button class="disc-art" type="button" data-di="${i}" aria-label="Play ${esc(t.title)}"><img src="${art(t)}" alt="" loading="lazy">${eqBars}</button>
+          <button class="disc-save" type="button" data-ds="${i}" aria-label="Save ${esc(t.title)} to a playlist"><svg><use href="#i-plus"/></svg></button>
+          <div class="t">${esc(t.title)}</div><div class="s">${esc(t.author)}</div>
+        </div>`).join('');
+      $('#disc').hidden = false;
+      rail.querySelectorAll('[data-di]').forEach((b) => b.onclick = () => playQueue(tracks, +b.dataset.di, null, true));
+      rail.querySelectorAll('[data-ds]').forEach((b) => b.onclick = () => saveSong(tracks[+b.dataset.ds]));
+    }).catch(() => {});
   }
   const feedCard = (p) => `
     <a class="feed-card" href="#p-${p.id}">
@@ -216,13 +246,52 @@
     });
   }
 
+  // Save a song you hear to one of your own playlists (always free: they're yours).
+  async function saveSong(t) {
+    const { mine } = await api('/api/feed');
+    sheet(`
+      <div class="sheet-top"><h2>Save to a playlist</h2><button class="icon-btn" data-close aria-label="Close"><svg><use href="#i-close"/></svg></button></div>
+      <div class="preview"><img src="${art(t)}" alt=""><div style="min-width:0"><div class="pm-title">${esc(t.title)}</div><div class="pm-sub">${srcTag(t)}${esc(t.author)}</div></div></div>
+      <ul class="pick-list">
+        ${mine.map((p) => {
+          const has = p.songs.some((s) => s.id === t.id), full = p.songs.length >= 10;
+          return `<li><button type="button" data-pl="${p.id}" ${has || full ? 'disabled' : ''}>${cover(p.songs)}<span class="pk"><span class="t">${esc(p.name)}</span><span class="s">${has ? 'Already there' : full ? 'Full' : `${p.songs.length} of 10 songs`}</span></span></button></li>`;
+        }).join('')}
+        <li><button type="button" data-new><div class="cover new"><svg><use href="#i-plus"/></svg></div><span class="pk"><span class="t">New playlist</span><span class="s">Starts with this song</span></span></button></li>
+      </ul>
+      <div class="error" id="saveErr"></div>`,
+    (el, close) => {
+      const add = async (pl) => {
+        try {
+          await api(`/api/playlists/${pl.id}/songs`, { method: 'POST', body: { source: t.source, sourceId: t.sourceId } });
+          close(); toast(`Saved to ${pl.name}.`);
+          if (location.hash === `#p-${pl.id}` || ['#home', ''].includes(location.hash)) route();
+        } catch (e) { $('#saveErr', el).textContent = e.message; }
+      };
+      el.querySelectorAll('[data-pl]').forEach((b) => b.onclick = () => add(mine.find((p) => p.id === b.dataset.pl)));
+      $('[data-new]', el).onclick = async () => {
+        try { add(await api('/api/playlists', { method: 'POST', body: { name: 'Saved songs' } })); } catch (e) { $('#saveErr', el).textContent = e.message; }
+      };
+    });
+  }
+
+  async function sharePlaylist(p) {
+    const url = `${location.origin}/#p-${p.id}`;
+    if (navigator.share) {
+      try { await navigator.share({ title: `${p.name} on Aux`, text: `Put a song on ${p.name}`, url }); return; }
+      catch (e) { if (e.name === 'AbortError') return; }
+    }
+    try { await navigator.clipboard.writeText(url); toast('Link copied. Send it to a friend.'); }
+    catch { toast(url); }
+  }
+
   // ---------- playlist ----------
   async function renderPlaylist(id) {
     const p = await api(`/api/playlists/${id}`);
     const mine = p.owner === me.id;
     const full = p.songs.length >= 10;
     view.innerHTML = `
-      <a class="back" href="javascript:history.back()"><svg><use href="#i-back"/></svg>Back</a>
+      <button class="back" type="button" data-back><svg><use href="#i-back"/></svg>Back</button>
       <div class="pl-head">
         ${cover(p.songs)}
         <div style="min-width:0">
@@ -235,14 +304,17 @@
         <div class="row-actions">
           <button class="btn primary" id="playAll" ${p.songs.length ? '' : 'disabled'} type="button"><svg><use href="#i-play"/></svg>${room ? 'Play for the sync' : 'Play'}</button>
           <button class="btn" id="addSong" ${full ? 'disabled' : ''} type="button"><svg><use href="#i-plus"/></svg>${full ? 'Full' : mine ? 'Add a song' : 'Add a song · 1 credit'}</button>
+          <button class="btn icon-only" id="sharePl" type="button" aria-label="Share this playlist"><svg><use href="#i-share"/></svg></button>
         </div>
       </div>
       <div class="section" style="padding:0;margin-top:14px">
         ${p.songs.length ? `<ol class="songs">${p.songs.map((s, i) => `
           <li class="song ${engine.state.track?.id === s.id ? 'now' : ''}" data-id="${esc(s.id)}">
-            <img class="thumb" src="${art(s)}" alt="" loading="lazy">
-            <div class="txt" data-play="${i}"><div class="st">${esc(s.title)}</div><div class="sa">${s.source === 'au' ? '<span class="tag">Audius</span> ' : ''}${esc(s.author)}${s.addedBy ? ` · <span class="added-by">added by @${esc(s.addedBy)}</span>` : ''}</div></div>
-            ${mine ? `<button class="icon-btn" data-del="${esc(s.id)}" aria-label="Remove ${esc(s.title)}"><svg style="width:18px;height:18px;color:var(--muted)"><use href="#i-trash"/></svg></button>` : '<span></span>'}
+            <span class="thumb-wrap" data-play="${i}"><img class="thumb" src="${art(s)}" alt="" loading="lazy">${eqBars}</span>
+            <div class="txt" data-play="${i}"><div class="st">${esc(s.title)}</div><div class="sa">${srcTag(s)}${esc(s.author)}${s.addedBy ? ` · <span class="added-by">added by @${esc(s.addedBy)}</span>` : ''}</div></div>
+            ${mine
+              ? `<button class="icon-btn" data-del="${esc(s.id)}" aria-label="Remove ${esc(s.title)}"><svg style="width:18px;height:18px;color:var(--muted)"><use href="#i-trash"/></svg></button>`
+              : `<button class="icon-btn" data-save="${i}" aria-label="Save ${esc(s.title)} to your playlist"><svg style="width:20px;height:20px;color:var(--muted)"><use href="#i-plus"/></svg></button>`}
           </li>`).join('')}</ol>`
         : `<div class="empty-state"><h3>No songs yet</h3><p>${mine ? 'Add 5 to 10 songs so people know your taste.' : 'Be the first to add a song here.'}</p></div>`}
       </div>
@@ -251,6 +323,8 @@
     $('#playAll').onclick = () => playQueue(queue, 0, p.id);
     view.querySelectorAll('[data-play]').forEach((el) => el.onclick = () => playQueue(queue, +el.dataset.play, p.id));
     $('#addSong').onclick = () => addSongSheet(p);
+    $('#sharePl').onclick = () => sharePlaylist(p);
+    view.querySelectorAll('[data-save]').forEach((b) => b.onclick = () => saveSong(queue[+b.dataset.save]));
     view.querySelectorAll('[data-del]').forEach((b) => b.onclick = async () => { await api(`/api/playlists/${p.id}/songs/${encodeURIComponent(b.dataset.del)}`, { method: 'DELETE' }); route(); });
     $('#delPl') && ($('#delPl').onclick = () => sheet(`
       <h2>Delete "${esc(p.name)}"?</h2><p class="muted" style="margin:0">Songs other people added will be gone too.</p>
@@ -258,13 +332,15 @@
     (el, close) => { $('#yesDel', el).onclick = async () => { await api(`/api/playlists/${p.id}`, { method: 'DELETE' }); close(); location.hash = 'home'; }; }));
   }
 
-  function addSongSheet(p) {
+  async function addSongSheet(p) {
     const mine = p.owner === me.id;
+    await loadConfig();
+    // YouTube is always offered (links work without search); the others only when the server has them on.
+    const sources = ['yt', 'au', 'jm'].filter((s) => s === 'yt' || config.sources?.[s]);
     sheet(`
       <div class="sheet-top"><h2>Add to ${esc(p.name)}</h2><button class="icon-btn" data-close aria-label="Close"><svg><use href="#i-close"/></svg></button></div>
-      <div class="seg" role="tablist" aria-label="Where to search">
-        <button type="button" role="tab" data-src="yt" aria-selected="true">YouTube Music</button>
-        <button type="button" role="tab" data-src="au" aria-selected="false">Independent artists</button>
+      <div class="seg" role="tablist" aria-label="Where to search" style="--n:${sources.length}">
+        ${sources.map((s) => `<button type="button" role="tab" data-src="${s}" aria-selected="false">${SOURCE_NAME[s]}</button>`).join('')}
       </div>
       <div class="field"><label for="sq" id="sql">Search a song or paste a link</label><input class="input" id="sq" placeholder="Song or artist" autocapitalize="none" autocomplete="off"></div>
       <div id="sres"></div>
@@ -272,12 +348,12 @@
       <p class="muted small" style="margin:0" id="snote"></p>`,
     (el, close) => {
       const q = $('#sq', el), out = $('#sres', el), err = $('#serr', el), note = $('#snote', el);
-      let source = store.get('aux-src') === 'au' ? 'au' : 'yt';
+      let source = sources.includes(store.get('aux-src')) ? store.get('aux-src') : 'yt';
       const cost = mine ? 'Adding to your own playlist is free.' : `Costs 1 credit. You have ${me.credits}.`;
       const setSource = (s) => {
         source = s; store.set('aux-src', s);
         el.querySelectorAll('[data-src]').forEach((b) => b.setAttribute('aria-selected', b.dataset.src === s));
-        note.textContent = s === 'au' ? `Songs from independent artists on Audius. They keep playing when your screen is off. ${cost}` : cost;
+        note.textContent = s === 'yt' ? cost : `Independent artists on ${SOURCE_NAME[s]}. These keep playing when your screen is off. ${cost}`;
         lookup();
       };
       el.querySelectorAll('[data-src]').forEach((b) => b.onclick = () => setSource(b.dataset.src));
@@ -288,7 +364,7 @@
         err.textContent = ''; const v = q.value.trim(); if (!v) return (out.innerHTML = '');
         const mySeq = ++seq;
         try {
-          if (/^https?:\/\/|youtu\.?be|audius\.co|^[\w-]{11}$/.test(v)) {
+          if (/^https?:\/\/|youtu\.?be|audius\.co|jamendo\.com|^[\w-]{11}$/.test(v)) {
             const s = await api(`/api/resolve?url=${encodeURIComponent(v)}`);
             if (mySeq === seq) show([s]);
           } else {
@@ -301,7 +377,7 @@
         } catch (e) { if (mySeq === seq) { out.innerHTML = ''; err.textContent = e.message; } }
       }
       function show(list) {
-        out.innerHTML = `<ul class="results">${list.map((s, i) => `<li><img src="${art(s)}" alt=""><div style="min-width:0"><div class="pm-title">${esc(s.title)}</div><div class="pm-sub">${s.official ? '<span class="tag">Song</span> ' : ''}${s.source === 'au' ? '<span class="tag">Audius</span> ' : ''}${esc(s.author)}</div></div><button class="btn primary" data-add="${i}" type="button" style="height:36px;padding:0 14px">Add</button></li>`).join('')}</ul>`;
+        out.innerHTML = `<ul class="results">${list.map((s, i) => `<li><img src="${art(s)}" alt=""><div style="min-width:0"><div class="pm-title">${esc(s.title)}</div><div class="pm-sub">${s.official ? '<span class="tag">Song</span> ' : ''}${srcTag(s)}${esc(s.author)}</div></div><button class="btn primary" data-add="${i}" type="button" style="height:36px;padding:0 14px">Add</button></li>`).join('')}</ul>`;
         out.querySelectorAll('[data-add]').forEach((b) => b.onclick = async () => {
           b.disabled = true;
           try {
@@ -342,7 +418,7 @@
   async function renderUser(id) {
     const { user, playlists } = await api(`/api/users/${id}`);
     view.innerHTML = `
-      <a class="back" href="javascript:history.back()"><svg><use href="#i-back"/></svg>Back</a>
+      <button class="back" type="button" data-back><svg><use href="#i-back"/></svg>Back</button>
       <section class="section" style="margin-top:8px;display:flex;gap:16px;align-items:center">
         ${avatar(user, 'lg')}
         <div style="flex:1;min-width:0"><h1 style="font-size:26px">${esc(user.name)}</h1><div class="muted">@${esc(user.id)}${user.online ? ' · online' : ''}${user.sample ? ' · sample profile' : ''}</div></div>
@@ -445,12 +521,15 @@
   }
   audio.addEventListener('ended', () => act({ type: 'next', from: engine.state.index }));
   audio.addEventListener('playing', startedPlaying);
-  audio.addEventListener('error', () => { if (engine.state.track?.source === 'au' && audio.getAttribute('src')) skipBroken(); });
+  audio.addEventListener('error', () => { if (engine.state.track && engine.state.track.source !== 'yt' && audio.getAttribute('src')) skipBroken(); });
   // Audio can't seek until it knows the length, so jump to the shared position once it does.
   audio.addEventListener('loadedmetadata', () => { audio.currentTime = Math.max(0, expected(engine.state)); engine.lastSeek = Date.now(); });
 
   // Both outputs share one small interface, so the sync loop doesn't care where a song comes from.
   const ytStatus = () => ({ [YT.PlayerState.PLAYING]: 'playing', [YT.PlayerState.BUFFERING]: 'buffering', [YT.PlayerState.ENDED]: 'ended' })[yt.getPlayerState()] || 'paused';
+  const streamUrl = (t) => (t.source === 'jm'
+    ? `https://prod-1.storage.jamendo.com/?trackid=${encodeURIComponent(t.sourceId)}&format=mp32`
+    : `https://api.audius.co/v1/tracks/${encodeURIComponent(t.sourceId)}/stream?app_name=aux-music`);
   const outputs = {
     yt: {
       ready: () => ytReady && !!yt?.getPlayerState,
@@ -459,16 +538,16 @@
       time: () => yt.getCurrentTime() || 0, duration: () => yt.getDuration?.() || 0, status: ytStatus,
       stop: () => { try { yt.stopVideo(); } catch {} },
     },
-    au: {
+    audio: {
       ready: () => true,
-      load: (t) => { audio.src = `https://api.audius.co/v1/tracks/${encodeURIComponent(t.sourceId)}/stream?app_name=aux-music`; },
+      load: (t) => { audio.src = streamUrl(t); },
       play: () => audio.play().catch(() => {}), pause: () => audio.pause(), seek: (s) => { audio.currentTime = s; },
       time: () => audio.currentTime || 0, duration: () => (Number.isFinite(audio.duration) ? audio.duration : 0),
       status: () => (audio.ended ? 'ended' : audio.paused ? 'paused' : audio.readyState < 3 ? 'buffering' : 'playing'),
       stop: () => { audio.pause(); audio.removeAttribute('src'); audio.load(); },
     },
   };
-  const out = () => outputs[engine.state.track?.source] || null;
+  const out = () => (!engine.state.track ? null : engine.state.track.source === 'yt' ? outputs.yt : outputs.audio);
 
   // Apply an action locally (solo) or send it to the room (synced).
   function act(m) {
@@ -486,8 +565,9 @@
     } else return;
     afterStateChange();
   }
-  function playQueue(queue, index, playlistId) {
-    act({ type: 'load', queue, index, playlistId });
+  // discover: the queue is the Discover row, which the server can rebuild for a sync.
+  function playQueue(queue, index, playlistId, discover = false) {
+    act({ type: 'load', queue, index, playlistId, discover });
     if (!room) expandPlayer();
   }
 
@@ -496,16 +576,32 @@
     if (st.track) $('#player').classList.remove('hidden');
     if (st.track?.id !== engine.listenId) { engine.listenId = st.track?.id; engine.listened = 0; }
     renderPlayerMeta(); tick();
-    if (location.hash.startsWith('#p-')) view.querySelectorAll('.song').forEach((li) => li.classList.toggle('now', li.dataset.id === st.track?.id));
+    view.querySelectorAll('.song, .disc-card').forEach((li) => li.classList.toggle('now', li.dataset.id === st.track?.id));
   }
 
-  // Show the video for YouTube songs and the cover for Audius songs.
+  // Show the video for YouTube songs and the cover for everything else.
   function showOutput(t) {
-    $('#videoWrap').classList.toggle('audio', t.source === 'au');
-    if (t.source === 'au') $('#artBig').src = t.art || '';
-    $('#tapAudio').textContent = t.source === 'au' ? 'Tap the cover to start the music' : 'Tap the video to start the music';
+    const isAudio = t.source !== 'yt';
+    $('#videoWrap').classList.toggle('audio', isAudio);
+    if (isAudio) $('#artBig').src = t.art || '';
+    $('#tapAudio').textContent = isAudio ? 'Tap the cover to start the music' : 'Tap the video to start the music';
   }
-  $('#videoWrap').addEventListener('click', () => { if (engine.state.track?.source === 'au' && engine.state.playing) audio.play().catch(() => {}); });
+  $('#videoWrap').addEventListener('click', () => { if (engine.state.track && engine.state.track.source !== 'yt' && engine.state.playing) audio.play().catch(() => {}); });
+
+  // YouTube stops when the screen sleeps, so keep it awake while a YouTube song plays.
+  let wakeLock = null;
+  async function syncWakeLock() {
+    const want = engine.state.playing && engine.state.track?.source === 'yt' && document.visibilityState === 'visible';
+    if (!('wakeLock' in navigator)) return;
+    try {
+      if (want && !wakeLock) {
+        wakeLock = 'pending';
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLock.addEventListener('release', () => { wakeLock = null; });
+      } else if (!want && wakeLock && wakeLock !== 'pending') { await wakeLock.release(); wakeLock = null; }
+    } catch { wakeLock = null; }
+  }
+  document.addEventListener('visibilitychange', syncWakeLock);
 
   // The sync loop: keep the active output where the shared clock says it should be.
   function tick() {
@@ -513,7 +609,7 @@
     if (!st.track || !o?.ready()) return;
     const exp = expected(st);
     if (engine.loaded !== st.track.id) {
-      for (const [k, other] of Object.entries(outputs)) if (k !== st.track.source && other.ready()) other.stop();
+      for (const other of Object.values(outputs)) if (other !== o && other.ready()) other.stop();
       engine.loaded = st.track.id; engine.lastSeek = Date.now();
       showOutput(st.track);
       o.load(st.track, exp);
@@ -574,6 +670,7 @@
   $('#toggleBtn').onclick = toggle; $('#miniToggle').onclick = toggle;
   $('#nextBtn').onclick = () => act({ type: 'next' }); $('#miniNext').onclick = () => act({ type: 'next' });
   $('#prevBtn').onclick = prev;
+  $('#saveBtn').onclick = () => engine.state.track && saveSong(engine.state.track);
   let seeking = false;
   $('#seek').oninput = () => { seeking = true; $('#tCur').textContent = fmt($('#seek').value / 100 * (out()?.duration() || 0)); };
   $('#seek').onchange = () => { seeking = false; act({ type: 'seek', position: $('#seek').value / 100 * (out()?.duration() || 0) }); };
@@ -591,6 +688,8 @@
     const playing = engine.state.playing;
     for (const b of [$('#toggleBtn'), $('#miniToggle')]) { b.querySelector('use').setAttribute('href', playing ? '#i-pause' : '#i-play'); b.setAttribute('aria-label', playing ? 'Pause' : 'Play'); }
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = engine.state.track ? (playing ? 'playing' : 'paused') : 'none';
+    document.body.classList.toggle('is-playing', !!(playing && engine.state.track));
+    syncWakeLock();
   }
   function updateProgress() {
     const o = out();
@@ -601,6 +700,11 @@
   function renderPlayerMeta() {
     const st = engine.state, t = st.track;
     $('#pmTitle').textContent = t?.title || 'Nothing playing';
+    P.style.setProperty('--art', t?.art ? `url("${t.art.replace(/"/g, '%22')}")` : 'none');
+    const lic = $('#pmLicense');
+    lic.classList.toggle('hidden', !t?.license);
+    if (t?.license) lic.href = t.license;
+    $('#saveBtn').hidden = !t;
     $('#pmSub').textContent = room ? `In sync with ${room.members.filter((m) => m.id !== me?.id).map((m) => '@' + m.id).join(', ') || 'no one yet'}` : (t?.author || '');
     $('#sheetLabel').textContent = room ? 'Playing in sync' : 'Now playing';
     $('#syncStrip').innerHTML = room ? `<div class="stack">${room.members.map((m) => avatar(m, 'sm')).join('')}</div><div style="flex:1;min-width:0"><div class="live-pill">In sync</div><div class="small muted">Everyone controls play, pause and skip.</div></div><a class="link-btn" href="#sync">Manage</a>` : '';
