@@ -20,6 +20,7 @@ Home has a **Fresh finds** row of trending Audius (and Jamendo) songs, which the
 - **Likes:** anyone can like a song. When a playlist's owner likes a song someone else added, that person earns 1 credit (once per song), and it shows as **Owner's pick**.
 - **Inbox:** saves "added a song" and "liked your pick" notes. When the person is offline, they also get a **web push** notification if they turned notifications on. Pushes carry no content: the service worker fetches the newest note from `/api/push/latest`.
 - **Account:** edit name, bio and photo; change your @ID (once every 30 days); see devices and sign them out; download your data; delete your account.
+- **Live lyrics:** a Lyrics button in the full player shows lyrics from LRCLIB (free, community-written, not licensed). Lines light up in time with the shared clock, so everyone in a party sees the same line, and tapping a line jumps there. Set the `LYRICS` variable to `off` to switch lyrics off at once if a rights holder asks.
 - **Legal pages:** `/privacy` and `/terms`.
 
 ## Stack
@@ -39,7 +40,7 @@ npm run db:local     # create the local database
 npx wrangler dev     # http://localhost:8787
 ```
 
-Local settings go in a `.dev.vars` file, which git ignores. Use `YT_API_KEY=...` for YouTube search and `JAMENDO_CLIENT_ID=...` for Jamendo. Set `GOOGLE_CLIENT_ID=` (empty) to get the quick ID signup instead of Google.
+Local settings go in a `.dev.vars` file, which git ignores. Use `YT_API_KEY=...` for YouTube search and `JAMENDO_CLIENT_ID=...` for Jamendo. Set `GOOGLE_CLIENT_ID=` (empty) to get the quick ID signup instead of Google, and `LOCAL_DEV=1` so local requests aren't redirected to https.
 
 ## Deploy
 

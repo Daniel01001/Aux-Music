@@ -926,7 +926,69 @@
       }
     }
   }
-  setInterval(() => { tick(); updateProgress(); }, 500);
+  setInterval(() => { tick(); updateProgress(); loadLyrics(); }, 500);
+
+  // =====================================================================
+  // Live lyrics (LRCLIB, community-sourced). Lines light up from the same
+  // clock as playback, so everyone in a sync sees the same line.
+  // =====================================================================
+  const ly = { open: store.get('aux-lyrics') === '1', forId: null, waitId: null, waitSince: 0, lines: [], plain: false, cur: -1 };
+  const parseLrc = (text) => text.split('\n').flatMap((row) => {
+    const words = row.replace(/\[[^\]]*\]/g, '').trim();
+    return [...row.matchAll(/\[(\d+):(\d+(?:\.\d+)?)\]/g)].map((m) => ({ t: Number(m[1]) * 60 + Number(m[2]), text: words }));
+  }).sort((a, b) => a.t - b.t);
+
+  async function loadLyrics() {
+    const t = engine.state.track;
+    if (!ly.open || !t || ly.forId === t.id || !config?.lyrics) return;
+    // Wait (up to 5 s) for the song's length, so we pick lyrics for the right version.
+    const d = Math.round(out()?.duration() || 0);
+    if (ly.waitId !== t.id) { ly.waitId = t.id; ly.waitSince = Date.now(); ly.lines = []; paintLyrics('Finding lyrics…'); }
+    if (!d && Date.now() - ly.waitSince < 5000) return;
+    ly.forId = t.id;
+    try {
+      const r = await api(`/api/lyrics?${new URLSearchParams({ id: t.id, title: t.title, author: t.author, duration: d })}`);
+      if (engine.state.track?.id !== t.id) return;
+      if (r.status === 'ok' && r.synced) { ly.lines = parseLrc(r.synced); ly.plain = false; }
+      else if (r.status === 'ok' && r.plain) { ly.lines = r.plain.split('\n').map((text) => ({ t: null, text: text.trim() })); ly.plain = true; }
+      paintLyrics(r.status === 'instrumental' ? 'Instrumental. No words, just the music.'
+        : r.status === 'off' ? 'Lyrics are switched off for now.'
+        : !ly.lines.length ? 'No lyrics found for this song yet.' : '');
+    } catch { paintLyrics("Couldn't load lyrics. Close and reopen Lyrics to try again."); ly.forId = null; ly.open && setLyricsOpen(false); }
+  }
+
+  function paintLyrics(msg) {
+    const list = $('#lyLines');
+    list.innerHTML = msg ? `<li class="ly-msg">${esc(msg)}</li>`
+      : ly.lines.map((l, i) => `<li data-ly="${i}" ${l.t == null ? '' : 'class="tap"'}>${esc(l.text) || '♪'}</li>`).join('');
+    list.classList.toggle('plain', ly.plain);
+    $('#lyCredit').innerHTML = msg ? '' : `Lyrics from <a href="https://lrclib.net" target="_blank" rel="noopener">LRCLIB</a>, written by the community.${ly.plain ? ' Not timed to this version.' : ''}`;
+    list.querySelectorAll('li.tap').forEach((li) => li.onclick = () => act({ type: 'seek', position: Math.max(0, ly.lines[+li.dataset.ly].t - 0.2) }));
+    ly.cur = -1; updateLyrics();
+  }
+
+  // Light up the line being sung and keep it in the middle of the panel.
+  function updateLyrics() {
+    if (!ly.open || ly.plain || !ly.lines.length || !P.classList.contains('full')) return;
+    const now = expected(engine.state) + 0.15;
+    let i = -1;
+    while (i + 1 < ly.lines.length && ly.lines[i + 1].t <= now) i++;
+    if (i === ly.cur) return;
+    ly.cur = i;
+    const list = $('#lyLines');
+    list.querySelectorAll('li').forEach((li, k) => { li.classList.toggle('on', k === i); li.classList.toggle('past', k < i); });
+    const li = list.children[Math.max(0, i)];
+    if (li) list.scrollTo({ top: li.offsetTop - list.clientHeight / 2 + li.offsetHeight / 2, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+  }
+  setInterval(updateLyrics, 200);
+
+  function setLyricsOpen(open) {
+    ly.open = open; store.set('aux-lyrics', open ? '1' : null);
+    $('#lyBtn').setAttribute('aria-pressed', open);
+    $('#lyrics').classList.toggle('hidden', !open);
+    if (open) { ly.cur = -1; loadLyrics(); updateLyrics(); }
+  }
+  $('#lyBtn').onclick = () => setLyricsOpen(!ly.open);
 
   function checkAutoplay() {
     const o = out();
@@ -984,6 +1046,7 @@
     lic.classList.toggle('hidden', !t?.license);
     if (t?.license) lic.href = t.license;
     $('#saveBtn').hidden = !t;
+    $('#lyBtn').hidden = !t || !config?.lyrics;
     $('#pmSub').textContent = room ? `In sync with ${room.members.filter((m) => m.id !== me?.id).map((m) => '@' + m.id).join(', ') || 'no one yet'}` : (t?.author || '');
     $('#sheetLabel').textContent = room ? 'Playing in sync' : 'Now playing';
     $('#syncStrip').innerHTML = room ? `<div class="strip-top"><div class="stack">${room.members.map((m) => avatar(m, 'sm')).join('')}</div><div style="flex:1;min-width:0"><div class="live-pill">In sync</div><div class="small muted">Everyone controls play, pause and skip.</div></div><a class="link-btn" href="#sync">Chat</a></div>${reactBar()}` : '';
@@ -1075,6 +1138,8 @@
   async function boot() {
     if (!token) return route();
     try { me = await api('/api/me'); } catch { return; }
+    await loadConfig();
+    setLyricsOpen(ly.open);
     setCredits(me.credits);
     paintMeAvatar(); setUnread(me.unread);
     connect();

@@ -7,7 +7,8 @@ export default {
   async fetch(req, env) {
     const url = new URL(req.url);
     // Google sign-in only trusts the https address, so never serve the app over plain http.
-    if (url.protocol === 'http:' && url.hostname !== 'localhost' && url.hostname !== '127.0.0.1') {
+    // (Local dev presents requests as http to the real domain, so .dev.vars sets LOCAL_DEV to skip this.)
+    if (url.protocol === 'http:' && !env.LOCAL_DEV) {
       url.protocol = 'https:';
       return Response.redirect(url.toString(), 301);
     }
@@ -33,6 +34,7 @@ async function route(req, env, pathname) {
     return Response.json({
       googleClientId: env.GOOGLE_CLIENT_ID || null,
       pushKey: env.VAPID_PRIVATE_KEY ? env.VAPID_PUBLIC_KEY || null : null,
+      lyrics: env.LYRICS !== 'off',
       sources: { yt: !!env.YT_API_KEY, au: true, jm: !!env.JAMENDO_CLIENT_ID },
     });
   }

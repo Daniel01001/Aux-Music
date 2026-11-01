@@ -25,6 +25,33 @@ function deviceLabel(ua = '') {
 }
 const songToTrack = ({ addedBy, addedAt, likes, liked, ownerLiked, ...t }) => t;
 
+// ---------- lyrics ----------
+// LRCLIB is a free, community-run lyrics database (not licensed by publishers).
+// Set the LYRICS variable to "off" to switch lyrics off at once if a rights holder asks.
+const LRCLIB = 'https://lrclib.net/api';
+const LYRICS_TTL = 7 * 24 * 3600_000;
+// Turns a YouTube-style title like "Tyla - Water (Official Music Video)" into { song: "Water", artist: "Tyla" }.
+function lyricsQuery(title, author) {
+  let song = String(title || '');
+  let artist = cleanAuthor(author);
+  song = song
+    .replace(/\s*[([][^)\]]*\b(official|video|audio|lyrics?|visuali[sz]er|live|remaster(ed)?|hd|4k|mv|explicit|clean)\b[^)\]]*[)\]]/gi, '')
+    .replace(/\s*[|｜].*$/, '')
+    .trim();
+  const dash = song.match(/^(.+?)\s+[-–—]\s+(.+)$/);
+  if (dash) { artist = dash[1].trim(); song = dash[2].trim(); }
+  const noFeat = (s) => s.replace(/\s*[([]?\b(ft\.?|feat\.?|featuring)\s[^)\]]*[)\]]?/i, '').trim();
+  return { song: noFeat(song), artist: noFeat(artist.split(/\s*[,&x×]\s+/)[0] || artist) };
+}
+async function lrclib(path) {
+  try {
+    const r = await fetch(`${LRCLIB}${path}`, { headers: { 'User-Agent': 'Aux/1.0 (https://music.africanspring.co.za)' }, signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return [];
+    const j = await r.json();
+    return Array.isArray(j) ? j : [];
+  } catch { return []; }
+}
+
 const json = (data, status = 200) => Response.json(data, { status });
 const fail = (status, error) => json({ error }, status);
 const randomHex = (bytes) => [...crypto.getRandomValues(new Uint8Array(bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -309,6 +336,25 @@ export class Hub extends DurableObject {
     throw new Error('Paste a YouTube Music album or playlist link, or an Audius album.');
   }
 
+  // Lyrics for a song, preferring time-synced ones whose length matches what's playing.
+  async lyrics(id, title, author, duration) {
+    const { song, artist } = lyricsQuery(title, author);
+    if (!song) return { status: 'none' };
+    return this.cached(`ly:${id || `${artist}|${song}`}`.toLowerCase(), LYRICS_TTL, async () => {
+      let hits = await lrclib(`/search?${new URLSearchParams({ track_name: song, ...(artist ? { artist_name: artist } : {}) })}`);
+      if (!hits.length) hits = await lrclib(`/search?${new URLSearchParams({ q: `${artist} ${song}`.trim() })}`);
+      if (!hits.length) return { status: 'none' };
+      const near = (h) => !duration || Math.abs((h.duration || 0) - duration) <= 5;
+      const best = hits.find((h) => h.syncedLyrics && near(h)) || hits.find((h) => h.instrumental && near(h)) || hits.find((h) => h.plainLyrics && near(h));
+      // A different version (say, an extended mix) would be out of time, so only offer its plain text.
+      const fallback = !best && hits.find((h) => h.plainLyrics);
+      const h = best || fallback;
+      if (!h) return { status: 'none' };
+      if (h.instrumental) return { status: 'instrumental' };
+      return { status: 'ok', synced: best ? h.syncedLyrics || null : null, plain: h.plainLyrics || null, match: `${h.artistName} · ${h.trackName}` };
+    });
+  }
+
   // ---------- HTTP ----------
   async fetch(req) {
     const url = new URL(req.url);
@@ -456,6 +502,13 @@ export class Hub extends DurableObject {
       if (!q) return json({ enabled: true, results: [] });
       try { return json({ enabled: true, results: await this.search(q, source) }); }
       catch { return fail(502, 'Song search is unavailable right now. Paste a link instead.'); }
+    }
+
+    if (m === 'GET' && path === '/api/lyrics') {
+      if (this.env.LYRICS === 'off') return json({ status: 'off' });
+      const q = url.searchParams;
+      try { return json(await this.lyrics(String(q.get('id') || '').slice(0, 60), String(q.get('title') || '').slice(0, 200), String(q.get('author') || '').slice(0, 120), Math.round(Number(q.get('duration')) || 0))); }
+      catch { return json({ status: 'none' }); }
     }
 
     if (m === 'GET' && path === '/api/discover') {
