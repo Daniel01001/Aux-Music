@@ -79,6 +79,13 @@ async function sha256(s) {
   const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
   return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
+// Google account IDs are stored scrambled with a secret key (HMAC), so a copy of the database
+// alone can't be matched to anyone's Google account. Stored as "h:<hex>".
+async function scrambleSub(sub, pepper) {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(pepper), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(String(sub)));
+  return 'h:' + [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
 const cleanHandle = (h) => String(h || '').toLowerCase().trim().replace(/^@/, '');
 const cleanName = (n) => String(n || '').trim().slice(0, 30);
 const cleanAuthor = (a) => String(a || '').replace(/ - Topic$/, '').replace(/VEVO$/, '').trim();
@@ -145,6 +152,18 @@ export class Hub extends DurableObject {
       this.invites = new Map(s.invites);
       this.leaving = new Map(s.leaving);
     });
+    ctx.blockConcurrencyWhile(() => this.scrambleOldSubs());
+  }
+
+  // One-off on start-up: scramble any Google IDs still stored in plain form.
+  async scrambleOldSubs() {
+    if (!this.env.SUB_PEPPER) return;
+    try {
+      const { results } = await this.db.prepare("SELECT id, google_sub FROM users WHERE google_sub IS NOT NULL AND google_sub NOT LIKE 'h:%'").all();
+      if (!results.length) return;
+      const stmts = await Promise.all(results.map(async (u) => this.db.prepare('UPDATE users SET google_sub = ? WHERE id = ?').bind(await scrambleSub(u.google_sub, this.env.SUB_PEPPER), u.id)));
+      await this.db.batch(stmts);
+    } catch (e) { console.error('scrambleOldSubs', e); }
   }
 
   persist() {
@@ -174,7 +193,7 @@ export class Hub extends DurableObject {
       .bind(t.id, t.source, t.sourceId, String(t.title).slice(0, 160), String(t.author).slice(0, 100), t.art, t.duration || null, t.license || null, now);
   }
   meUser(u) {
-    return { ...this.publicUser(u), credits: u.credits, email: u.email || null, hasGooglePhoto: !!u.google_picture,
+    return { ...this.publicUser(u), credits: u.credits, google: !!u.google_sub, hasGooglePhoto: !!u.google_picture,
       canChangeHandleAt: (u.handle_changed_at || 0) + HANDLE_COOLDOWN };
   }
   getUser(id) { return this.db.prepare('SELECT * FROM users WHERE id = ?').bind(id).first(); }
@@ -192,8 +211,9 @@ export class Hub extends DurableObject {
     const now = Date.now();
     const [token, session] = await this.sessionStmt(handle, extra.device);
     await this.db.batch([
-      this.db.prepare('INSERT INTO users (id, name, credits, google_sub, email, google_picture, avatar, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-        .bind(handle, name, START_CREDITS, extra.googleSub || null, extra.email || null, extra.picture || null, extra.picture || null, now),
+      // No email is stored, and the Google photo is only offered; it shows once the person turns it on.
+      this.db.prepare('INSERT INTO users (id, name, credits, google_sub, google_picture, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .bind(handle, name, START_CREDITS, extra.googleSub || null, extra.picture || null, now),
       session,
       this.db.prepare('INSERT INTO credit_ledger (user_id, delta, reason, at) VALUES (?, ?, ?, ?)').bind(handle, START_CREDITS, 'start', now),
     ]);
@@ -631,7 +651,14 @@ export class Hub extends DurableObject {
     const c = await fetchJson(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(String(body.credential || ''))}`).catch(() => null);
     const valid = c && c.aud === clientId && ['accounts.google.com', 'https://accounts.google.com'].includes(c.iss) && Number(c.exp) * 1000 > Date.now() && c.sub;
     if (!valid) return fail(401, 'Google sign-in failed. Try again.');
-    const existing = await this.db.prepare('SELECT * FROM users WHERE google_sub = ?').bind(c.sub).first();
+    if (!this.env.SUB_PEPPER) return fail(500, 'Sign-in is being set up. Try again in a minute.');
+    const subKey = await scrambleSub(c.sub, this.env.SUB_PEPPER);
+    let existing = await this.db.prepare('SELECT * FROM users WHERE google_sub = ?').bind(subKey).first();
+    if (!existing) {
+      // Accounts made before IDs were scrambled: find by the plain ID once, then scramble it.
+      existing = await this.db.prepare('SELECT * FROM users WHERE google_sub = ?').bind(c.sub).first();
+      if (existing) await this.db.prepare('UPDATE users SET google_sub = ? WHERE id = ?').bind(subKey, existing.id).run();
+    }
     if (existing) {
       // Keep the offered Google photo fresh; only the shown photo if they're already using it.
       if (c.picture && c.picture !== existing.google_picture) {
@@ -645,7 +672,7 @@ export class Hub extends DurableObject {
     const handle = cleanHandle(body.handle), name = cleanName(body.name);
     const bad = await this.checkNewUser(handle, name);
     if (bad) return fail(...bad);
-    return json(await this.createUser(handle, name, { googleSub: c.sub, email: c.email, picture: c.picture, device }));
+    return json(await this.createUser(handle, name, { googleSub: subKey, picture: c.picture, device }));
   }
 
   // ---------- account changes ----------
@@ -662,8 +689,8 @@ export class Hub extends DurableObject {
     // One transaction: copy the user to the new ID, repoint everything, then remove the old row.
     await this.db.batch([
       this.db.prepare('UPDATE users SET google_sub = NULL WHERE id = ?').bind(old),
-      this.db.prepare(`INSERT INTO users (id, name, credits, google_sub, email, sample, created_at, bio, avatar, google_picture, handle_changed_at, mood, mood_track, mood_at)
-        VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(handle, u.name, u.credits, u.google_sub, u.email, u.created_at, u.bio, u.avatar, u.google_picture, Date.now(), u.mood, u.mood_track, u.mood_at),
+      this.db.prepare(`INSERT INTO users (id, name, credits, google_sub, sample, created_at, bio, avatar, google_picture, handle_changed_at, mood, mood_track, mood_at)
+        VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(handle, u.name, u.credits, u.google_sub, u.created_at, u.bio, u.avatar, u.google_picture, Date.now(), u.mood, u.mood_track, u.mood_at),
       move('UPDATE sessions SET user_id = ? WHERE user_id = ?'),
       move('UPDATE playlists SET owner = ? WHERE owner = ?'),
       move('UPDATE playlist_songs SET added_by = ? WHERE added_by = ?'),
@@ -736,7 +763,7 @@ export class Hub extends DurableObject {
     const user = await this.getUser(me.id);
     const data = {
       exportedAt: new Date().toISOString(),
-      account: { id: user.id, name: user.name, bio: user.bio, mood: user.mood, moodSong: user.mood_track, email: user.email, credits: user.credits, createdAt: user.created_at, photo: user.avatar },
+      account: { id: user.id, name: user.name, bio: user.bio, mood: user.mood, moodSong: user.mood_track, signIn: user.google_sub ? 'Google (account ID stored scrambled)' : 'Aux ID', credits: user.credits, createdAt: user.created_at, photo: user.avatar },
       playlists: await this.loadPlaylists(me.id, 'WHERE p.owner = ?', me.id),
       songsYouAddedToOthers: await all('SELECT ps.playlist_id, ps.track_id, ps.added_at FROM playlist_songs ps WHERE ps.added_by = ?'),
       likes: await all('SELECT playlist_id, track_id, at FROM likes WHERE user_id = ?'),

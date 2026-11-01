@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="midnight">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Your data &amp; security · Aux</title>
+<meta name="description" content="What Aux gets when you sign in with Google, what it keeps, and how it's protected.">
+<link rel="icon" href="/icons/icon-192.png" type="image/png">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+<script src="/theme.js"></script>
+</head>
+<body>
+<main class="doc">
+  <a href="/" class="wordmark">aux<span class="dot"></span></a>
+  <h1>Your data &amp; security</h1>
+  <p class="muted">Plain answers to the questions people ask about signing in with Google. Last updated 1 November 2026.</p>
+
+  <h2>Does Aux see my Google password?</h2>
+  <p><b>No, never.</b> You type your password on Google's own page, not in Aux. Google then tells Aux "this is the same person as before", and that's all.</p>
+
+  <h2>What can Aux do with my Google account?</h2>
+  <p><b>Nothing beyond signing you in.</b> Aux asks Google for the most basic sign-in only. It has no access to your Gmail, contacts, Drive, calendar, YouTube account, history or payments, and it can't post anything as you.</p>
+
+  <h2>What does Aux keep?</h2>
+  <ul>
+    <li><b>A scrambled sign-in ID.</b> Google gives every app a number for your account. Aux stores it scrambled with a secret key, so a copy of our database alone can't be linked to your Google account.</li>
+    <li><b>Your name and the @ID you chose.</b> You can change both.</li>
+    <li><b>Not your email address.</b> Google sends it, but Aux doesn't keep it. We deleted the ones collected before 1 November 2026.</li>
+    <li><b>Your Google photo only if you turn it on.</b> It's off unless you choose "Use my Google photo".</li>
+    <li>What you do in the app: playlists, songs you add or like, your mood, credits, and party chat. The <a href="/privacy">privacy policy</a> has the full list.</li>
+  </ul>
+
+  <h2>Is it encrypted?</h2>
+  <ul>
+    <li><b>Everything you send and receive is encrypted</b> with HTTPS, the same protection banks use. The app refuses unencrypted connections and tells your browser to always use the secure address.</li>
+    <li><b>Your sign-in is never stored readable.</b> Each device gets its own sign-in key, and our database keeps only a scrambled (hashed) fingerprint of it, which can't be turned back into the key.</li>
+    <li><b>Photos you upload are encrypted when stored</b> by our host, Cloudflare.</li>
+    <li><b>Party chat is not end-to-end encrypted.</b> It travels encrypted but the Aux server can read it, like most group chats. Don't share anything private in a party.</li>
+  </ul>
+
+  <h2>What else protects me?</h2>
+  <ul>
+    <li>The app only lets its own code, Google sign-in and YouTube's player run on its pages. This blocks a common way of stealing sign-ins.</li>
+    <li>No adverts and no tracking companies.</li>
+    <li>Under <b>You → Devices</b> you can see everywhere you're signed in and sign any device out.</li>
+  </ul>
+
+  <h2>How do I take back control?</h2>
+  <ul>
+    <li><b>Download everything Aux holds about you:</b> You → Download my data.</li>
+    <li><b>Delete your account:</b> You → Delete my account. It's removed straight away.</li>
+    <li><b>Disconnect Aux from Google:</b> at <a href="https://myaccount.google.com/connections">myaccount.google.com/connections</a>, choose Aux, then "Delete all connections". Do this after deleting your Aux account.</li>
+  </ul>
+
+  <h2>Something worrying?</h2>
+  <p>Email <a href="mailto:hlatshwayomukelwa@gmail.com">hlatshwayomukelwa@gmail.com</a>. We take security reports seriously and will reply.</p>
+</main>
+</body>
+</html>

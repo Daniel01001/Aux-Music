@@ -13,13 +13,39 @@ export default {
       return Response.redirect(url.toString(), 301);
     }
     const res = await route(req, env, url.pathname);
-    if (url.protocol !== 'https:' || res.status === 101) return res;
-    // Tell browsers to use https from now on, even when someone types the address without it.
+    if (res.status === 101) return res;
     const out = new Response(res.body, res);
-    out.headers.set('Strict-Transport-Security', 'max-age=31536000');
+    // Tell browsers to use https from now on, even when someone types the address without it.
+    if (url.protocol === 'https:') out.headers.set('Strict-Transport-Security', 'max-age=31536000');
+    out.headers.set('X-Content-Type-Options', 'nosniff');
+    out.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin'); // YouTube embeds need the origin
+    if ((out.headers.get('Content-Type') || '').includes('text/html')) {
+      out.headers.set('Content-Security-Policy', CSP);
+      out.headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+    }
     return out;
   },
 };
+
+// Pages may only run scripts from Aux itself, Google sign-in and YouTube's player. This makes it far
+// harder for injected content to run code and steal a sign-in. Images and audio can come from any
+// https host because song covers and streams live on many music servers.
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self' https://www.youtube.com https://s.ytimg.com https://accounts.google.com/gsi/client",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com/gsi/style",
+  "font-src https://fonts.gstatic.com",
+  "img-src 'self' data: blob: https:",
+  "media-src 'self' blob: https:",
+  "frame-src https://www.youtube.com https://www.youtube-nocookie.com https://accounts.google.com",
+  "connect-src 'self' https://accounts.google.com/gsi/",
+  "worker-src 'self'",
+  "manifest-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
 
 async function route(req, env, pathname) {
   if (pathname.startsWith('/media/')) {

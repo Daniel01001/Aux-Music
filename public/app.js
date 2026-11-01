@@ -141,7 +141,7 @@
         <div class="sync-card" id="gCard">
           <div id="gBtn" class="g-btn"></div>
           <div class="error" id="err"></div>
-          <p class="muted small" style="margin:0">Use the Google account you listen to YouTube Music with. By continuing you agree to the <a href="/terms.html" style="text-decoration:underline">Terms</a> and <a href="/privacy.html" style="text-decoration:underline">Privacy policy</a>.</p>
+          <p class="muted small" style="margin:0">Aux never sees your Google password and can't touch your Gmail, contacts or YouTube account. We keep only a scrambled sign-in ID and your name. <a href="/security" style="text-decoration:underline">How we protect your data</a>. By continuing you agree to the <a href="/terms" style="text-decoration:underline">Terms</a> and <a href="/privacy" style="text-decoration:underline">Privacy policy</a>.</p>
         </div>
       </div>`;
     try {
@@ -861,7 +861,7 @@
       <section class="section"><div class="section-head"><h2>Share your ID</h2></div><p class="muted" style="margin:0 0 10px">Friends search <b style="color:var(--text)">@${esc(me.id)}</b> to add songs to your playlists or sync with you.</p></section>
       <section class="section"><div class="section-head"><h2>Devices</h2><button class="link-btn" id="outOthers" type="button" hidden>Sign out of the others</button></div><ul class="people" id="devs"><li class="muted small">Loading…</li></ul></section>
       <section class="section"><div class="section-head"><h2>Account</h2></div>
-        ${me.email ? `<p class="small muted" style="margin:0 0 12px">Signed in with Google as ${esc(me.email)}</p>` : ''}
+        ${me.google ? `<p class="small muted" style="margin:0 0 12px">Signed in with Google. Aux doesn't keep your email or see your password. <a href="/security" style="text-decoration:underline">How we protect your data</a></p>` : ''}
         <div class="row-actions"><button class="btn" id="signOut" type="button">Sign out</button><button class="btn" id="exportMe" type="button">Download my data</button></div>
         <button class="link-btn" id="delMe" type="button" style="color:var(--bad);margin-top:18px">Delete my account</button>
       </section>
