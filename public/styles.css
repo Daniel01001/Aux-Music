@@ -238,7 +238,7 @@ h2 { font-size: 20px; }
 .play-btn { width: 68px; height: 68px; border-radius: 50%; border: 0; background: var(--accent); color: var(--on-accent); display: grid; place-items: center; }
 .play-btn svg { width: 30px; height: 30px; }
 .sync-strip:empty { display: none; }
-.sync-strip { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 14px; background: var(--surface); border: 1px solid var(--line); margin-bottom: 18px; }
+.sync-strip { display: flex; flex-direction: column; align-items: stretch; gap: 12px; padding: 12px 14px; border-radius: 14px; background: var(--surface); border: 1px solid var(--line); margin-bottom: 18px; }
 .queue { list-style: none; margin: 0; padding: 0; }
 .queue li { display: grid; grid-template-columns: 22px 44px 1fr; gap: 12px; align-items: center; padding: 7px 0; cursor: pointer; }
 .queue li .n { color: var(--muted); font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
@@ -274,6 +274,41 @@ h2 { font-size: 20px; }
 .results { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; }
 .results li { display: grid; grid-template-columns: 48px 1fr auto; gap: 10px; align-items: center; padding: 6px 0; }
 .results img { width: 48px; height: 48px; border-radius: 6px; object-fit: cover; }
+
+/* Party chat */
+.strip-top { display: flex; align-items: center; gap: 12px; }
+.chat { list-style: none; margin: 12px 0; padding: 4px 2px; display: flex; flex-direction: column; gap: 10px; max-height: 46vh; min-height: 120px; overflow-y: auto; overscroll-behavior: contain; }
+.chat li { display: flex; gap: 8px; align-items: flex-end; max-width: 86%; }
+.chat li.mine { align-self: flex-end; }
+.chat .bubble { background: var(--surface); border: 1px solid var(--line); border-radius: 16px 16px 16px 4px; padding: 7px 11px; font-size: 14px; overflow-wrap: anywhere; min-width: 0; }
+.chat .mine .bubble { background: var(--accent); color: var(--on-accent); border-color: transparent; border-radius: 16px 16px 4px 16px; }
+.chat .bubble .who { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 1px; }
+.chat .bubble time { display: block; font-size: 10.5px; opacity: .6; margin-top: 2px; text-align: right; }
+.chat li.system { align-self: center; max-width: 100%; font-size: 12px; color: var(--muted); }
+.chat-form .input { flex: 1; }
+.badge.chat { background: var(--accent); }
+
+/* Reactions: icons, never emoji, in the app's own UI */
+.reacts { display: flex; gap: 8px; }
+.react-btn { flex: 1; height: 42px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); display: grid; place-items: center; }
+.react-btn svg { width: 22px; height: 22px; }
+.react-btn.pop svg { animation: pop .35s cubic-bezier(.3,1.6,.5,1); }
+@keyframes pop { 40% { transform: scale(1.35); } }
+.r-love { color: #EF6B8A; } .r-fire { color: #F2894A; } .r-star { color: #F2C94C; } .r-energy { color: #5CC8B5; }
+.react-layer { position: fixed; inset: 0; pointer-events: none; z-index: 40; overflow: hidden; }
+.float-react { position: absolute; bottom: calc(var(--tab-h) + var(--mini-h) + var(--safe-b) + 24px); display: flex; flex-direction: column; align-items: center; gap: 2px; animation: rise 2.5s cubic-bezier(.2,.7,.3,1) forwards; }
+.float-react svg { width: 38px; height: 38px; filter: drop-shadow(0 4px 10px rgb(0 0 0 / .35)); }
+.float-react span { font-size: 11px; font-weight: 600; color: var(--text); background: color-mix(in srgb, var(--bg) 70%, transparent); padding: 1px 6px; border-radius: 999px; }
+@keyframes rise {
+  0% { transform: translateY(20px) scale(.6); opacity: 0; }
+  15% { transform: translateY(0) scale(1.1); opacity: 1; }
+  100% { transform: translateY(-46vh) translateX(-24px) scale(.9); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* No travel: the reaction appears briefly in place. */
+  .float-react { animation: fade 1.6s ease forwards !important; }
+  @keyframes fade { 0%, 70% { opacity: 1; } 100% { opacity: 0; } }
+}
 
 /* Privacy and terms pages */
 .doc { max-width: 680px; margin: 0 auto; padding: calc(var(--safe-t) + 28px) 20px 64px; }

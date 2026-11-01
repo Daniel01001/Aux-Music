@@ -513,9 +513,33 @@
       api('/api/users?q=').then((l) => { const on = l.filter((u) => u.online); $('#onl') && ($('#onl').innerHTML = on.length ? on.map(personRow).join('') : `<li class="muted">No one else is online. Open Aux on your other phone to test.</li>`); $('#onl') && wirePeople($('#onl')); });
       return;
     }
-    const st = room.state;
+    // The room card redraws on every play/pause; the chat below it stays put so typing isn't lost.
     view.innerHTML = `
-      <section class="section" style="margin-top:8px">
+      <section class="section" style="margin-top:8px"><div id="syncCard"></div></section>
+      <section class="section">
+        <div class="section-head"><h2>Party chat</h2></div>
+        ${reactBar()}
+        <ol class="chat" id="chatList" aria-live="polite"></ol>
+        <form class="inline-form chat-form" id="chatF" novalidate>
+          <input class="input" id="chatQ" maxlength="300" placeholder="Say something to the party" autocomplete="off" enterkeyhint="send" aria-label="Message">
+          <button class="btn primary" type="submit" style="height:48px">Send</button>
+        </form>
+      </section>
+      <section class="section"><h2 style="margin-bottom:10px">Add someone</h2>${inviteForm()}</section>`;
+    renderSyncCard(); renderChat(); wireReactBar(view);
+    $('#chatF').onsubmit = (e) => {
+      e.preventDefault();
+      const q = $('#chatQ'), text = q.value.trim();
+      if (!text) return;
+      send({ type: 'chat', text }); q.value = '';
+    };
+    chatUnread = 0; paintSyncBadge();
+    wireInviteForm();
+  }
+  function renderSyncCard() {
+    const el = $('#syncCard'); if (!el || !room) return;
+    const st = room.state;
+    el.innerHTML = `
         <div class="sync-card">
           <div style="display:flex;justify-content:space-between;align-items:center"><span class="live-pill">In sync · ${room.members.length}</span><button class="link-btn" id="leave" type="button" style="color:var(--bad)">Leave</button></div>
           ${st.track ? `<div class="preview" style="background:none;padding:0"><img src="${art(st.track)}" alt=""><div style="min-width:0"><div class="pm-title">${esc(st.track.title)}</div><div class="pm-sub">${esc(st.track.author)} · ${st.playing ? 'playing' : 'paused'}</div></div></div>` : `<p class="muted" style="margin:0">Nothing playing yet. Open any playlist and tap <b>Play for the sync</b>.</p>`}
@@ -523,11 +547,36 @@
             ${room.members.map((m) => `<li class="person">${avatar(m)}<div class="who"><div class="n">${m.id === me.id ? 'You' : esc(m.name)}</div><div class="h">@${esc(m.id)}${m.id === room.host ? ' · started the sync' : ''}</div></div></li>`).join('')}
             ${room.pending.map((id) => `<li class="person pending">${avatar({ id, name: id })}<div class="who"><div class="n">@${esc(id)}</div><div class="h">Waiting for them to accept</div></div></li>`).join('')}
           </ul>
-        </div>
-        <div style="margin-top:18px"><h2 style="margin-bottom:10px">Add someone</h2>${inviteForm()}</div>
-      </section>`;
+        </div>`;
     $('#leave').onclick = () => send({ type: 'leave' });
-    wireInviteForm();
+  }
+
+  // ---------- party chat and reactions ----------
+  let chat = [], chatUnread = 0;
+  const REACTIONS = [['love', 'Love', 'i-heart-solid'], ['fire', 'Fire', 'i-fire'], ['star', 'Star', 'i-star'], ['energy', 'Energy', 'i-bolt']];
+  const reactBar = () => `<div class="reacts" role="group" aria-label="Send a reaction">${REACTIONS.map(([k, label, icon]) => `<button type="button" class="react-btn r-${k}" data-react="${k}" aria-label="${label}"><svg><use href="#${icon}"/></svg></button>`).join('')}</div>`;
+  const wireReactBar = (root) => root.querySelectorAll('[data-react]').forEach((b) => b.onclick = () => { send({ type: 'react', kind: b.dataset.react }); b.classList.remove('pop'); void b.offsetWidth; b.classList.add('pop'); });
+  const clock = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  function renderChat() {
+    const list = $('#chatList'); if (!list) return;
+    list.innerHTML = chat.length ? chat.map((c) => c.from
+      ? `<li class="${c.from === me?.id ? 'mine' : ''}">${c.from === me?.id ? '' : avatar({ id: c.from, name: c.name }, 'sm')}<div class="bubble">${c.from === me?.id ? '' : `<div class="who">${esc(c.name || c.from)}</div>`}<div>${esc(c.text)}</div><time>${clock(c.at)}</time></div></li>`
+      : `<li class="system">${esc(c.text)} · ${clock(c.at)}</li>`).join('')
+      : '<li class="system">No messages yet. Say hi, or send a reaction.</li>';
+    list.scrollTop = list.scrollHeight;
+  }
+  function paintSyncBadge() { $('#syncBadge').classList.toggle('chat', chatUnread > 0); }
+
+  // A reaction floats up over the screen with who sent it.
+  function floatReaction(kind, from) {
+    const r = REACTIONS.find(([k]) => k === kind); if (!r) return;
+    const el = document.createElement('div');
+    el.className = `float-react r-${kind}`;
+    el.style.left = `${55 + Math.random() * 30}%`;
+    el.innerHTML = `<svg><use href="#${r[2]}"/></svg><span>${from === me?.id ? 'You' : '@' + esc(from)}</span>`;
+    $('#reactLayer').append(el);
+    setTimeout(() => el.remove(), 2600);
   }
   const inviteForm = () => `<form class="inline-form" id="invF" style="margin-top:14px" novalidate><div class="input-wrap"><span class="prefix">@</span><input class="input" id="invQ" placeholder="their ID" autocapitalize="none" autocomplete="off" spellcheck="false"></div><button class="btn primary" type="submit" style="height:48px">Invite</button></form>`;
   function wireInviteForm() { $('#invF').onsubmit = (e) => { e.preventDefault(); const v = $('#invQ').value.trim().replace(/^@/, ''); if (v) invite(v); $('#invQ').value = ''; }; }
@@ -740,7 +789,18 @@
   }
   audio.addEventListener('ended', () => act({ type: 'next', from: engine.state.index }));
   audio.addEventListener('playing', startedPlaying);
-  audio.addEventListener('error', () => { if (engine.state.track && engine.state.track.source !== 'yt' && audio.getAttribute('src')) skipBroken(); });
+  // Independent-music servers sometimes fail for a moment, so try a song once more before skipping it.
+  let audioRetried = null;
+  audio.addEventListener('error', () => {
+    const t = engine.state.track;
+    if (!t || t.source === 'yt' || !audio.getAttribute('src')) return;
+    if (audioRetried !== t.id) {
+      audioRetried = t.id;
+      setTimeout(() => { if (engine.state.track?.id === t.id) { audio.src = streamUrl(t); if (engine.state.playing) audio.play().catch(() => {}); } }, 1200);
+      return;
+    }
+    skipBroken();
+  });
   // Audio can't seek until it knows the length, so jump to the shared position once it does.
   audio.addEventListener('loadedmetadata', () => { audio.currentTime = Math.max(0, expected(engine.state)); engine.lastSeek = Date.now(); });
 
@@ -926,7 +986,8 @@
     $('#saveBtn').hidden = !t;
     $('#pmSub').textContent = room ? `In sync with ${room.members.filter((m) => m.id !== me?.id).map((m) => '@' + m.id).join(', ') || 'no one yet'}` : (t?.author || '');
     $('#sheetLabel').textContent = room ? 'Playing in sync' : 'Now playing';
-    $('#syncStrip').innerHTML = room ? `<div class="stack">${room.members.map((m) => avatar(m, 'sm')).join('')}</div><div style="flex:1;min-width:0"><div class="live-pill">In sync</div><div class="small muted">Everyone controls play, pause and skip.</div></div><a class="link-btn" href="#sync">Manage</a>` : '';
+    $('#syncStrip').innerHTML = room ? `<div class="strip-top"><div class="stack">${room.members.map((m) => avatar(m, 'sm')).join('')}</div><div style="flex:1;min-width:0"><div class="live-pill">In sync</div><div class="small muted">Everyone controls play, pause and skip.</div></div><a class="link-btn" href="#sync">Chat</a></div>${reactBar()}` : '';
+    if (room) wireReactBar($('#syncStrip'));
     $('#queueList').innerHTML = st.queue.map((s, i) => `<li data-q="${i}" class="${i === st.index ? 'cur' : ''}"><span class="n">${i + 1}</span><img src="${art(s)}" alt=""><div style="min-width:0"><div class="qt">${esc(s.title)}</div><div class="qa">${esc(s.author)}</div></div></li>`).join('');
     $('#queueList').querySelectorAll('[data-q]').forEach((li) => li.onclick = () => act({ type: 'load', queue: st.queue, index: +li.dataset.q, playlistId: st.playlistId }));
     if ('mediaSession' in navigator && t) navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.author, album: 'Aux', artwork: t.art ? [{ src: t.art, sizes: '480x480', type: 'image/jpeg' }] : [] });
@@ -963,8 +1024,18 @@
     if (m.type === 'invite-expired') { pendingInvites = pendingInvites.filter((i) => i.id !== m.id); $('#modalRoot').innerHTML = ''; showInvite(); return; }
     if (m.type === 'notice' || m.type === 'error') return toast(m.text);
     if (m.type === 'inbox') return setUnread(m.unread);
+    if (m.type === 'chat-history') { chat = m.messages; return renderChat(); }
+    if (m.type === 'chat') {
+      chat.push(m.msg); if (chat.length > 60) chat.shift();
+      if ($('#chatList')) return renderChat();
+      // Away from the Sync page: count it, and show other people's messages briefly.
+      if (m.msg.from && m.msg.from !== me?.id) { chatUnread++; paintSyncBadge(); toast(`${m.msg.name || '@' + m.msg.from}: ${m.msg.text}`); }
+      return;
+    }
+    if (m.type === 'react') return floatReaction(m.kind, m.from);
     if (m.type === 'room') {
       const was = room; room = m.room;
+      if (!room) { chat = []; chatUnread = 0; paintSyncBadge(); }
       $('#syncBadge').classList.toggle('hidden', !room);
       if (room) {
         const s = room.state;
@@ -975,7 +1046,8 @@
       }
       afterStateChange();
       const membersChanged = JSON.stringify(was?.members?.map((x) => x.id)) !== JSON.stringify(room?.members?.map((x) => x.id)) || String(was?.pending) !== String(room?.pending);
-      if (location.hash === '#sync' || (membersChanged && ['#home', ''].includes(location.hash))) route();
+      if (location.hash === '#sync') { if (room && was && $('#syncCard')) renderSyncCard(); else route(); }
+      else if (membersChanged && ['#home', ''].includes(location.hash)) route();
       if (!was && room && room.members.length > 1) toast('Sync is on. Everyone hears the same thing.');
     }
   }

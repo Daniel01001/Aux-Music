@@ -12,6 +12,9 @@ const AUDIUS = 'https://api.audius.co/v1';
 const JAMENDO = 'https://api.jamendo.com/v3.0';
 const APP_NAME = 'aux-music';
 const SEARCH_TTL = 24 * 3600_000;
+const CHAT_KEEP = 60;        // messages kept per party, so people who join see what's been said
+const CHAT_LEN = 300;
+const REACTIONS = new Set(['love', 'fire', 'star', 'energy']);
 const HANDLE_COOLDOWN = 30 * 24 * 3600_000; // @IDs are how friends find you, so they change rarely
 
 // A short, human label for a sign-in, from the browser's user agent.
@@ -87,6 +90,7 @@ export class Hub extends DurableObject {
     this.rooms = new Map();   // roomId -> { id, host, members:Set, pending:Set, names:{}, state }
     this.invites = new Map(); // inviteId -> { from, fromName, to, roomId, at }
     this.leaving = new Map(); // userId -> time to drop them from their room
+    this.recent = new Map();  // `${userId}:${kind}` -> recent send times, for flood limits
     ctx.blockConcurrencyWhile(async () => {
       const s = await ctx.storage.get('rt');
       if (!s) return;
@@ -708,6 +712,7 @@ export class Hub extends DurableObject {
     if (this.leaving.delete(uid)) this.persist();
     const r0 = this.userRoom(uid);
     server.send(JSON.stringify({ type: 'room', room: r0 ? this.roomOut(r0) : null }));
+    if (r0) server.send(JSON.stringify({ type: 'chat-history', messages: r0.chat || [] }));
     for (const [id, inv] of this.invites) {
       if (inv.to === uid) server.send(JSON.stringify({ type: 'invite', id, from: { id: inv.from, name: inv.fromName, online: true }, roomSize: this.rooms.get(inv.roomId)?.members.size || 1 }));
     }
@@ -747,7 +752,26 @@ export class Hub extends DurableObject {
       this.sendTo(last, { type: 'notice', text: 'Everyone left the sync.' });
       return;
     }
+    this.roomSay(r, `@${uid} left`);
     this.broadcastRoom(r);
+  }
+
+  // ---------- party chat ----------
+  // A message from a member, or a system note when `from` is null. Kept in the room, sent to everyone in it.
+  roomSay(r, text, from = null) {
+    const msg = { id: randomHex(4), from, name: from ? r.names[from] || from : null, text, at: Date.now() };
+    (r.chat ||= []).push(msg);
+    if (r.chat.length > CHAT_KEEP) r.chat.splice(0, r.chat.length - CHAT_KEEP);
+    for (const id of r.members) this.sendTo(id, { type: 'chat', msg });
+  }
+  // True if this user has sent `limit` of this kind within `ms`.
+  flooding(uid, kind, limit, ms) {
+    const key = `${uid}:${kind}`, now = Date.now();
+    const times = (this.recent.get(key) || []).filter((t) => now - t < ms);
+    if (times.length >= limit) return true;
+    times.push(now);
+    this.recent.set(key, times);
+    return false;
   }
   closeIfEmpty(r, notify) {
     if (r.members.size <= 1 && r.pending.size === 0 && !r.state.track) {
@@ -775,7 +799,7 @@ export class Hub extends DurableObject {
       let r = this.userRoom(uid);
       if (!r) {
         r = { id: randomHex(4), host: uid, members: new Set([uid]), pending: new Set(), names: { [uid]: name },
-          state: { track: null, playing: false, position: 0, ref: Date.now(), queue: [], index: 0, playlistId: null, heldBy: null } };
+          state: { track: null, playing: false, position: 0, ref: Date.now(), queue: [], index: 0, playlistId: null, heldBy: null }, chat: [] };
         this.rooms.set(r.id, r);
       }
       if (r.pending.has(to)) return;
@@ -800,6 +824,8 @@ export class Hub extends DurableObject {
         r.members.add(uid);
         r.names[uid] = name;
         for (const id of r.members) if (id !== uid) this.sendTo(id, { type: 'notice', text: `@${uid} joined the sync.` });
+        this.sendTo(uid, { type: 'chat-history', messages: r.chat || [] });
+        this.roomSay(r, `@${uid} joined`);
       } else {
         this.sendTo(inv.from, { type: 'notice', text: `@${uid} declined the sync.` });
         if (this.closeIfEmpty(r, inv.from)) return this.persist();
@@ -815,6 +841,19 @@ export class Hub extends DurableObject {
     const positionNow = () => (st.playing ? st.position + (now - st.ref) / 1000 : st.position);
 
     if (m.type === 'leave') { this.leaveRoom(uid); return this.persist(); }
+    if (m.type === 'chat') {
+      const text = String(m.text || '').replace(/\s+/g, ' ').trim().slice(0, CHAT_LEN);
+      if (!text) return;
+      if (this.flooding(uid, 'chat', 5, 10_000)) return err('Slow down a little. Try again in a few seconds.');
+      this.roomSay(room, text, uid);
+      return this.persist();
+    }
+    if (m.type === 'react') {
+      // Reactions float across everyone's screen and aren't stored.
+      if (!REACTIONS.has(m.kind) || this.flooding(uid, 'react', 4, 3000)) return;
+      for (const id of room.members) this.sendTo(id, { type: 'react', kind: m.kind, from: uid });
+      return;
+    }
     if (m.type === 'load') {
       // The queue always comes from a stored playlist or the Discover row, never from the client.
       const pl = m.discover ? null : await this.playlist(String(m.playlistId || ''));
