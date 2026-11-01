@@ -72,11 +72,12 @@
     if (!token) return renderOnboard();
     document.body.classList.remove('no-tabs');
     const h = location.hash.slice(1) || 'home';
-    const tab = h.startsWith('p-') || h.startsWith('u-') ? null : h;
+    const tab = h.startsWith('p-') || h.startsWith('u-') ? null : h.startsWith('join-') ? 'sync' : h;
     document.querySelectorAll('.tabbar a').forEach((a) => a.dataset.tab === (tab || (h.startsWith('u-') ? 'search' : 'home')) ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current'));
     try {
       if (h.startsWith('p-')) await renderPlaylist(h.slice(2));
       else if (h.startsWith('u-')) await renderUser(h.slice(2));
+      else if (h.startsWith('join-')) await renderJoin(h.slice(5));
       else await (routes[h] || renderHome)();
     } catch (e) { view.innerHTML = `<div class="empty-state"><h3>Couldn't load this</h3><p>${esc(e.message)}</p></div>`; }
     window.scrollTo(0, 0);
@@ -197,6 +198,10 @@
         </div>
       </section>
       ${room ? syncBanner() : ''}
+      <section class="section" id="liveHome" hidden>
+        <div class="section-head"><h2>Live parties</h2><a class="link-btn" href="#sync">Start one</a></div>
+        <div class="parties" id="liveHomeList"></div>
+      </section>
       <section class="section" id="disc" hidden>
         <div class="section-head"><div><h2>Fresh finds</h2><div class="small muted">Independent artists. Keeps playing with your screen off.</div></div></div>
         <div class="rail" id="discRail"></div>
@@ -206,6 +211,7 @@
         ${feed.others.length ? `<div class="feed">${feed.others.map(feedCard).join('')}</div>` : `<div class="empty-state">No one else has a playlist yet.</div>`}
       </section>`;
     $('#newPl').onclick = newPlaylist;
+    loadLiveParties($('#liveHomeList'), $('#liveHome'));
     // Discover loads after the page so Home appears straight away.
     api('/api/discover').then(({ tracks }) => {
       const rail = $('#discRail');
@@ -505,10 +511,24 @@
       view.innerHTML = `
         <section class="section" style="margin-top:8px">
           <h1>Listen together</h1>
-          <p class="muted" style="max-width:40ch">Invite someone by their ID. When they accept, you both hear the same song at the same moment. Add more people to make it a party.</p>
-          ${inviteForm()}
+          <p class="muted" style="max-width:40ch">Start a party and send the link, or invite someone by their ID. Everyone hears the same song at the same moment.</p>
+          <form class="sync-card start-card" id="startF" novalidate>
+            <div class="field"><label for="ptName">Party name</label><input class="input" id="ptName" maxlength="40" placeholder="${esc(me.name)}'s party" autocomplete="off"></div>
+            <div class="setting-row bare"><div><div class="n">Public party</div><div class="small muted">Anyone with the link can join, and it shows under Live parties.</div></div>
+              <button class="toggle" id="ptPublic" type="button" role="switch" aria-checked="true" aria-label="Public party"><span></span></button></div>
+            <button class="btn primary block" type="submit"><svg><use href="#i-sync"/></svg>Start a party</button>
+          </form>
         </section>
+        <section class="section" id="liveSec" hidden><div class="section-head"><h2>Live parties</h2></div><div class="parties" id="liveList"></div></section>
+        <section class="section"><h2 style="margin-bottom:10px">Invite someone</h2>${inviteForm()}</section>
         <section class="section"><div class="section-head"><h2>Online now</h2></div><ul class="people" id="onl"></ul></section>`;
+      const pub = $('#ptPublic');
+      pub.onclick = () => pub.setAttribute('aria-checked', pub.getAttribute('aria-checked') !== 'true');
+      $('#startF').onsubmit = (e) => {
+        e.preventDefault();
+        send({ type: 'start', name: $('#ptName').value.trim() || `${me.name}'s party`, public: pub.getAttribute('aria-checked') === 'true' });
+      };
+      loadLiveParties($('#liveList'), $('#liveSec'));
       wireInviteForm();
       api('/api/users?q=').then((l) => { const on = l.filter((u) => u.online); $('#onl') && ($('#onl').innerHTML = on.length ? on.map(personRow).join('') : `<li class="muted">No one else is online. Open Aux on your other phone to test.</li>`); $('#onl') && wirePeople($('#onl')); });
       return;
@@ -539,17 +559,80 @@
   function renderSyncCard() {
     const el = $('#syncCard'); if (!el || !room) return;
     const st = room.state;
+    const isHost = room.host === me.id;
     el.innerHTML = `
         <div class="sync-card">
-          <div style="display:flex;justify-content:space-between;align-items:center"><span class="live-pill">In sync · ${room.members.length}</span><button class="link-btn" id="leave" type="button" style="color:var(--bad)">Leave</button></div>
+          <div style="display:flex;justify-content:space-between;align-items:center"><span class="live-pill">${room.party ? 'Party' : 'In sync'} · ${room.members.length}</span><button class="link-btn" id="leave" type="button" style="color:var(--bad)">Leave</button></div>
+          ${room.party ? `<div class="party-title"><h2>${esc(room.name)}</h2><span class="tag">${room.public ? 'Public' : 'Invite only'}</span></div>` : ''}
+          <div class="row-actions">
+            ${room.public ? '<button class="btn primary" id="shareParty" type="button"><svg><use href="#i-share"/></svg>Share link</button>' : ''}
+            ${isHost ? `<button class="btn" id="togglePublic" type="button">${room.public ? 'Make invite-only' : 'Make public'}</button>` : ''}
+          </div>
+          ${!room.public && !isHost ? '<p class="small muted" style="margin:0">Only the host can open this party to everyone.</p>' : ''}
           ${st.track ? `<div class="preview" style="background:none;padding:0"><img src="${art(st.track)}" alt=""><div style="min-width:0"><div class="pm-title">${esc(st.track.title)}</div><div class="pm-sub">${esc(st.track.author)} · ${st.playing ? 'playing' : 'paused'}</div></div></div>` : `<p class="muted" style="margin:0">Nothing playing yet. Open any playlist and tap <b>Play for the sync</b>.</p>`}
           <ul class="people">
-            ${room.members.map((m) => `<li class="person">${avatar(m)}<div class="who"><div class="n">${m.id === me.id ? 'You' : esc(m.name)}</div><div class="h">@${esc(m.id)}${m.id === room.host ? ' · started the sync' : ''}</div></div></li>`).join('')}
+            ${room.members.map((m) => `<li class="person">${avatar(m)}<div class="who"><div class="n">${m.id === me.id ? 'You' : esc(m.name)}</div><div class="h">@${esc(m.id)}${m.id === room.host ? (room.party ? ' · host' : ' · started the sync') : ''}</div></div></li>`).join('')}
             ${room.pending.map((id) => `<li class="person pending">${avatar({ id, name: id })}<div class="who"><div class="n">@${esc(id)}</div><div class="h">Waiting for them to accept</div></div></li>`).join('')}
           </ul>
         </div>`;
     $('#leave').onclick = () => send({ type: 'leave' });
+    $('#shareParty') && ($('#shareParty').onclick = () => shareParty(room));
+    $('#togglePublic') && ($('#togglePublic').onclick = () => send({ type: 'party', public: !room.public }));
   }
+
+  // ---------- parties ----------
+  const partyLink = (code) => `${location.origin}/#join-${code}`;
+  async function shareParty(r) {
+    const url = partyLink(r.code);
+    if (navigator.share) {
+      try { await navigator.share({ title: `${r.name} on Aux`, text: `Join ${r.name} and listen with us on Aux`, url }); return; }
+      catch (e) { if (e.name === 'AbortError') return; }
+    }
+    try { await navigator.clipboard.writeText(url); toast('Party link copied. Send it to anyone.'); } catch { toast(url); }
+  }
+  const partyCard = (p) => `
+    <a class="party-card" href="#join-${esc(p.code)}">
+      <div class="pc-art">${p.track?.art ? `<img src="${esc(p.track.art)}" alt="" loading="lazy">` : '<svg><use href="#i-sync"/></svg>'}${p.playing ? eqBars : ''}</div>
+      <div style="min-width:0"><div class="t">${esc(p.name)}</div>
+        <div class="s">${p.track ? esc(p.track.title) : 'Picking the first song'}</div>
+        <div class="s">@${esc(p.host)} · ${p.size} listening</div></div>
+      <span class="btn" style="height:36px;padding:0 14px">Join</span>
+    </a>`;
+  async function loadLiveParties(list, section) {
+    const parties = await api('/api/parties').catch(() => []);
+    if (!list?.isConnected) return;
+    const others = parties.filter((p) => p.code !== room?.code);
+    if (!others.length) return;
+    list.innerHTML = others.map(partyCard).join('');
+    list.classList.add('now'); // lets the playing bars show
+    section.hidden = false;
+  }
+
+  // The page a party link opens: who's there and what's playing, then a Join button
+  // (a tap also lets the phone start the music).
+  async function renderJoin(code) {
+    code = code.toUpperCase();
+    if (room?.code === code) { location.replace('#sync'); return; }
+    let p;
+    try { p = await api(`/api/parties/${encodeURIComponent(code)}`); }
+    catch (e) {
+      view.innerHTML = `<div class="empty-state" style="margin-top:40px"><h3>This party has ended</h3><p>Start your own, or see who's live now.</p><a class="btn primary" href="#sync">Go to parties</a></div>`;
+      return;
+    }
+    view.innerHTML = `
+      <section class="section join-page">
+        <div class="join-art">${p.track?.art ? `<img src="${esc(p.track.art)}" alt="">` : '<svg><use href="#i-sync"/></svg>'}</div>
+        <span class="live-pill">${p.playing ? 'Live now' : 'Party'} · ${p.size} listening</span>
+        <h1>${esc(p.name)}</h1>
+        <p class="muted" style="margin:0">Hosted by @${esc(p.host)}${p.track ? ` · now playing ${esc(p.track.title)} by ${esc(p.track.author)}` : ''}</p>
+        ${p.public
+          ? `<button class="btn primary block" id="joinBtn" type="button"><svg><use href="#i-sync"/></svg>Join the party</button>
+             ${room ? `<p class="small muted" style="margin:0">You'll leave the sync you're in now.</p>` : ''}`
+          : `<p class="sync-card" style="margin:0">This party is invite-only. Ask @${esc(p.host)} to invite you, or to make it public.</p>`}
+      </section>`;
+    $('#joinBtn') && ($('#joinBtn').onclick = (e) => { e.target.disabled = true; joiningCode = code; send({ type: 'join', code }); setTimeout(() => { if (e.target.isConnected) e.target.disabled = false; }, 4000); });
+  }
+  let joiningCode = null;
 
   // ---------- party chat and reactions ----------
   let chat = [], chatUnread = 0;
@@ -647,7 +730,18 @@
     sheet(`
       <div class="sheet-top"><h2>Edit profile</h2><button class="icon-btn" data-close aria-label="Close"><svg><use href="#i-close"/></svg></button></div>
       <form id="pf" class="form-stack" novalidate>
-        ${me.hasGooglePhoto ? `<label class="setting-row"><span class="n">Show my Google photo</span><input type="checkbox" id="pfPhoto" class="checkbox" ${me.avatar ? 'checked' : ''}></label>` : ''}
+        <div class="photo-row">
+          <span id="pfPreview">${avatar(me, 'lg')}</span>
+          <div class="photo-actions">
+            <label class="btn" for="pfFile">${me.avatar ? 'Change photo' : 'Add a photo'}</label>
+            <input type="file" id="pfFile" accept="image/*" class="visually-hidden">
+            <div class="photo-links">
+              ${me.hasGooglePhoto ? '<button class="link-btn" type="button" id="pfGoogle">Use my Google photo</button>' : ''}
+              <button class="link-btn" type="button" id="pfRemove" style="color:var(--muted)" ${me.avatar ? '' : 'hidden'}>Remove</button>
+            </div>
+          </div>
+        </div>
+        <div class="small muted" id="pfPhotoNote"></div>
         <div class="field"><label for="pfName">Name</label><input class="input" id="pfName" maxlength="30" value="${esc(me.name)}" autocomplete="nickname"></div>
         <div class="field"><label for="pfBio">About you</label><textarea class="input textarea" id="pfBio" maxlength="160" rows="3" placeholder="What do you listen to?">${esc(me.bio || '')}</textarea></div>
         <div class="field"><label for="pfHandle">Your ID</label><div class="input-wrap"><span class="prefix">@</span><input class="input" id="pfHandle" maxlength="20" value="${esc(me.id)}" autocapitalize="none" spellcheck="false" ${canHandle ? '' : 'disabled'}></div>
@@ -656,18 +750,49 @@
         <button class="btn primary block" type="submit">Save</button>
       </form>`,
     (el, close) => {
+      // Photo changes save straight away; the form below saves name, bio and ID.
+      const photoDone = (u, msg) => {
+        me = { ...me, ...u }; paintMeAvatar();
+        $('#pfPreview', el).innerHTML = avatar(me, 'lg');
+        $('#pfPhotoNote', el).textContent = msg;
+        el.querySelector('label[for="pfFile"]').textContent = me.avatar ? 'Change photo' : 'Add a photo';
+        $('#pfRemove', el).hidden = !me.avatar;
+      };
+      $('#pfFile', el).onchange = async (e) => {
+        const file = e.target.files[0]; if (!file) return;
+        const note = $('#pfPhotoNote', el); note.textContent = 'Uploading…';
+        try {
+          const blob = await squarePhoto(file);
+          const r = await fetch('/api/me/photo', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg' }, body: blob });
+          const j = await r.json();
+          if (!r.ok) throw new Error(j.error);
+          photoDone(j, 'Photo updated.');
+        } catch (err) { note.textContent = err.message || "Couldn't use that photo. Try another one."; }
+        e.target.value = '';
+      };
+      $('#pfGoogle', el) && ($('#pfGoogle', el).onclick = async () => photoDone(await api('/api/me', { method: 'PATCH', body: { photo: true } }), 'Using your Google photo.'));
+      $('#pfRemove', el).onclick = async () => photoDone(await api('/api/me/photo', { method: 'DELETE' }), 'Photo removed.');
       $('#pf', el).onsubmit = async (e) => {
         e.preventDefault();
         const btn = e.target.querySelector('[type=submit]'); btn.disabled = true;
         try {
-          const photo = $('#pfPhoto', el);
-          me = { ...me, ...(await api('/api/me', { method: 'PATCH', body: { name: $('#pfName', el).value, bio: $('#pfBio', el).value, ...(photo ? { photo: photo.checked } : {}) } })) };
+          me = { ...me, ...(await api('/api/me', { method: 'PATCH', body: { name: $('#pfName', el).value, bio: $('#pfBio', el).value } })) };
           const handle = $('#pfHandle', el).value.trim().toLowerCase().replace(/^@/, '');
           if (canHandle && handle && handle !== me.id) me = { ...me, ...(await api('/api/me/handle', { method: 'POST', body: { handle } })) };
           paintMeAvatar(); close(); toast('Profile saved.'); route();
         } catch (err) { $('#pfErr', el).textContent = err.message; btn.disabled = false; }
       };
     });
+  }
+
+  // Crops the middle square of a photo and shrinks it to 400 px, so uploads are small (~40 KB).
+  async function squarePhoto(file) {
+    const img = await createImageBitmap(file, { imageOrientation: 'from-image' }).catch(() => null);
+    if (!img) throw new Error("Couldn't open that photo. Try a JPEG or PNG.");
+    const side = Math.min(img.width, img.height), size = Math.min(400, side);
+    const c = Object.assign(document.createElement('canvas'), { width: size, height: size });
+    c.getContext('2d').drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
+    return new Promise((ok, no) => c.toBlob((b) => (b ? ok(b) : no(new Error("Couldn't prepare that photo."))), 'image/jpeg', 0.86));
   }
 
   async function loadDevices() {
@@ -1113,7 +1238,9 @@
       }
       afterStateChange();
       const membersChanged = JSON.stringify(was?.members?.map((x) => x.id)) !== JSON.stringify(room?.members?.map((x) => x.id)) || String(was?.pending) !== String(room?.pending);
-      if (location.hash === '#sync') { if (room && was && $('#syncCard')) renderSyncCard(); else route(); }
+      // Joined from a party link: go to the party.
+      if (room && joiningCode && room.code === joiningCode) { joiningCode = null; location.hash = 'sync'; }
+      else if (location.hash === '#sync') { if (room && was && $('#syncCard')) renderSyncCard(); else route(); }
       else if (membersChanged && ['#home', ''].includes(location.hash)) route();
       if (!was && room && room.members.length > 1) toast('Sync is on. Everyone hears the same thing.');
     }

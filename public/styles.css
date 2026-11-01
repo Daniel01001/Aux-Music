@@ -275,6 +275,32 @@ h2 { font-size: 20px; }
 .results li { display: grid; grid-template-columns: 48px 1fr auto; gap: 10px; align-items: center; padding: 6px 0; }
 .results img { width: 48px; height: 48px; border-radius: 6px; object-fit: cover; }
 
+/* Profile photo picker */
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.photo-row { display: flex; align-items: center; gap: 16px; }
+.photo-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.photo-actions .btn { height: 38px; cursor: pointer; }
+.photo-links { display: flex; gap: 16px; }
+#pfFile:focus-visible + .photo-links, .photo-actions label:focus-within { outline: 2px solid var(--accent); }
+
+/* Parties */
+.start-card { margin-top: 14px; }
+.setting-row.bare { background: none; border: 0; padding: 0; }
+.parties { display: flex; flex-direction: column; gap: 10px; }
+.party-card { display: grid; grid-template-columns: 56px 1fr auto; gap: 12px; align-items: center; padding: 10px; border-radius: 16px; background: var(--surface); border: 1px solid var(--line); }
+.party-card .t { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.party-card .s { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pc-art { position: relative; width: 56px; height: 56px; border-radius: 12px; overflow: hidden; background: var(--surface-2); display: grid; place-items: center; color: var(--accent); }
+.pc-art img { width: 100%; height: 100%; object-fit: cover; }
+.pc-art .eq { display: flex; border-radius: 12px; }
+.party-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.party-title h2 { font-size: 22px; overflow-wrap: anywhere; }
+.join-page { margin-top: 24px; display: flex; flex-direction: column; gap: 14px; align-items: flex-start; }
+.join-page h1 { font-size: 34px; overflow-wrap: anywhere; }
+.join-art { width: 160px; height: 160px; border-radius: 22px; overflow: hidden; background: var(--surface-2); display: grid; place-items: center; color: var(--accent); box-shadow: 0 18px 40px -18px rgb(0 0 0 / .6); }
+.join-art img { width: 100%; height: 100%; object-fit: cover; }
+.join-art svg { width: 56px; height: 56px; }
+
 /* "New version" bar, above everything but the toasts */
 .update-bar { position: fixed; z-index: 55; left: 50%; transform: translateX(-50%); top: calc(var(--safe-t) + 10px); width: min(calc(100% - 32px), 528px); padding: 12px 16px; border: 0; border-radius: 14px; background: var(--accent); color: var(--on-accent); font-weight: 600; font-size: 14px; box-shadow: 0 10px 30px -10px rgb(0 0 0 / .5); animation: drop .25s ease-out; }
 

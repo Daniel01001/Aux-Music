@@ -11,12 +11,14 @@
     "not_found_handling": "single-page-application",
     // The pages go through the Worker so plain-http visits get redirected to https (Google sign-in
     // only trusts https). Scripts, styles and icons skip it and are served straight from the edge.
-    "run_worker_first": ["/", "/index.html", "/privacy", "/privacy.html", "/terms", "/terms.html", "/api/*", "/ws", "/.well-known/*"]
+    "run_worker_first": ["/", "/index.html", "/privacy", "/privacy.html", "/terms", "/terms.html", "/api/*", "/ws", "/media/*", "/.well-known/*"]
   },
   // Lets open apps notice a new deploy and refresh themselves.
   "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "durable_objects": { "bindings": [{ "name": "HUB", "class_name": "Hub" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Hub"] }],
+  // Profile photos people upload. Private bucket; the Worker serves them at /media/...
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "aux-media" }],
   "d1_databases": [
     { "binding": "DB", "database_name": "aux", "database_id": "418a533a-e741-45c8-911a-7158947d793c", "migrations_dir": "migrations" }
   ],

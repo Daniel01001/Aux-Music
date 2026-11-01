@@ -12,7 +12,18 @@ const AUDIUS = 'https://api.audius.co/v1';
 const JAMENDO = 'https://api.jamendo.com/v3.0';
 const APP_NAME = 'aux-music';
 const SEARCH_TTL = 24 * 3600_000;
-const CHAT_KEEP = 60;        // messages kept per party, so people who join see what's been said
+const PHOTO_MAX = 400 * 1024;
+// Recognise an image by its first bytes, not by what the upload claims to be.
+function imageType(b) {
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return { mime: 'image/jpeg', ext: 'jpg' };
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return { mime: 'image/png', ext: 'png' };
+  if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return { mime: 'image/webp', ext: 'webp' };
+  return null;
+}
+const PARTY_MAX = 50;
+// Short codes for party links: no 0/O or 1/I/L, so they're easy to read out.
+const partyCode = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), (n) => 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'[n % 31]).join('');
+const CHAT_KEEP = 60;       // messages kept per party, so people who join see what's been said
 const CHAT_LEN = 300;
 const REACTIONS = new Set(['love', 'fire', 'star', 'energy']);
 const HANDLE_COOLDOWN = 30 * 24 * 3600_000; // @IDs are how friends find you, so they change rarely
@@ -121,7 +132,7 @@ export class Hub extends DurableObject {
     ctx.blockConcurrencyWhile(async () => {
       const s = await ctx.storage.get('rt');
       if (!s) return;
-      for (const r of s.rooms) this.rooms.set(r.id, { ...r, members: new Set(r.members), pending: new Set(r.pending) });
+      for (const r of s.rooms) this.rooms.set(r.id, { code: partyCode(), name: `${r.names?.[r.host] || r.host}'s party`, public: false, party: false, ...r, members: new Set(r.members), pending: new Set(r.pending) });
       this.invites = new Map(s.invites);
       this.leaving = new Map(s.leaving);
     });
@@ -365,6 +376,7 @@ export class Hub extends DurableObject {
 
   async api(req, url) {
     const m = req.method, path = url.pathname;
+    if (path === '/api/me/photo' && (m === 'POST' || m === 'DELETE')) return this.photo(req, m); // raw image body, so before JSON parsing
     const body = m === 'POST' || m === 'PATCH' ? await req.json().catch(() => ({})) : {};
     const device = deviceLabel(req.headers.get('User-Agent') || '');
 
@@ -399,6 +411,7 @@ export class Hub extends DurableObject {
       const bio = body.bio === undefined ? me.bio : String(body.bio || '').trim().slice(0, 160);
       const avatar = body.photo === undefined ? me.avatar : (body.photo ? me.google_picture : null);
       await this.db.prepare('UPDATE users SET name = ?, bio = ?, avatar = ? WHERE id = ?').bind(name, bio || null, avatar || null, me.id).run();
+      if (avatar !== me.avatar) await this.dropUpload(me.avatar);
       return json(this.meUser(await this.getUser(me.id)));
     }
     if (m === 'POST' && path === '/api/me/handle') return this.changeHandle(me, body.handle);
@@ -504,6 +517,18 @@ export class Hub extends DurableObject {
       catch { return fail(502, 'Song search is unavailable right now. Paste a link instead.'); }
     }
 
+    // ----- parties -----
+    if (m === 'GET' && path === '/api/parties') {
+      const list = [...this.rooms.values()].filter((r) => r.public && r.members.size).map((r) => this.partyOut(r))
+        .sort((a, b) => (b.playing - a.playing) || (b.size - a.size)).slice(0, 30);
+      return json(list);
+    }
+    p = path.match(/^\/api\/parties\/([A-Za-z0-9]{6})$/);
+    if (m === 'GET' && p) {
+      const r = this.roomByCode(p[1]);
+      return r && r.members.size ? json(this.partyOut(r)) : fail(404, 'That party has ended.');
+    }
+
     if (m === 'GET' && path === '/api/lyrics') {
       if (this.env.LYRICS === 'off') return json({ status: 'off' });
       const q = url.searchParams;
@@ -596,8 +621,36 @@ export class Hub extends DurableObject {
     return json(this.meUser(await this.getUser(handle)));
   }
 
+  // ---------- profile photos ----------
+  // The app sends a small square JPEG it has already cropped. We check it really is an image,
+  // store it under a random name, and point the profile at it.
+  async photo(req, m) {
+    const me = await this.userByToken((req.headers.get('Authorization') || '').replace('Bearer ', ''));
+    if (!me) return fail(401, 'Sign in again.');
+    if (m === 'DELETE') {
+      await this.db.prepare('UPDATE users SET avatar = NULL WHERE id = ?').bind(me.id).run();
+      await this.dropUpload(me.avatar);
+      return json(this.meUser(await this.getUser(me.id)));
+    }
+    const buf = new Uint8Array(await req.arrayBuffer());
+    if (!buf.length) return fail(400, 'Pick a photo first.');
+    if (buf.length > PHOTO_MAX) return fail(413, 'That photo is too big. Try another one.');
+    const type = imageType(buf);
+    if (!type) return fail(415, 'Use a JPEG, PNG or WebP photo.');
+    const key = `avatars/${randomHex(12)}.${type.ext}`;
+    await this.env.MEDIA.put(key, buf, { httpMetadata: { contentType: type.mime }, customMetadata: { user: me.id } });
+    await this.db.prepare('UPDATE users SET avatar = ? WHERE id = ?').bind(`/media/${key}`, me.id).run();
+    await this.dropUpload(me.avatar);
+    return json(this.meUser(await this.getUser(me.id)));
+  }
+  // Deletes an uploaded photo we no longer use (Google photos aren't ours to delete).
+  async dropUpload(url) {
+    if (url?.startsWith('/media/')) { try { await this.env.MEDIA.delete(url.slice(7)); } catch {} }
+  }
+
   async deleteAccount(me) {
     const id = me.id;
+    await this.dropUpload(me.avatar);
     const del = (sql) => this.db.prepare(sql).bind(id);
     await this.db.batch([
       del('DELETE FROM playlist_songs WHERE added_by = ?'),
@@ -776,9 +829,40 @@ export class Hub extends DurableObject {
     const s = JSON.stringify(msg);
     for (const ws of this.ctx.getWebSockets(uid)) { try { ws.send(s); } catch {} }
   }
+  // A sync room. `party` rooms were started on purpose and stay open while anyone is in them;
+  // `public` ones are listed and anyone with the link can walk in.
+  newRoom(uid, name, { party = false, isPublic = false, title } = {}) {
+    let code; do code = partyCode(); while ([...this.rooms.values()].some((r) => r.code === code));
+    const r = { id: randomHex(4), code, name: String(title || `${name}'s party`).trim().slice(0, 40), public: isPublic, party,
+      host: uid, members: new Set([uid]), pending: new Set(), names: { [uid]: name },
+      state: { track: null, playing: false, position: 0, ref: Date.now(), queue: [], index: 0, playlistId: null, heldBy: null }, chat: [] };
+    this.rooms.set(r.id, r);
+    return r;
+  }
+  // Puts someone into a room (leaving any other), with the chat so far.
+  joinRoom(r, uid, name) {
+    this.leaveRoom(uid);
+    r.members.add(uid);
+    r.pending.delete(uid);
+    r.names[uid] = name;
+    for (const id of r.members) if (id !== uid) this.sendTo(id, { type: 'notice', text: `@${uid} joined the ${r.party ? 'party' : 'sync'}.` });
+    this.sendTo(uid, { type: 'chat-history', messages: r.chat || [] });
+    this.roomSay(r, `@${uid} joined`);
+    this.broadcastRoom(r);
+  }
+  roomByCode(code) {
+    const c = String(code || '').toUpperCase();
+    for (const r of this.rooms.values()) if (r.code === c) return r;
+    return null;
+  }
+  partyOut(r) {
+    const t = r.state.track;
+    return { code: r.code, name: r.name, public: !!r.public, host: r.host, hostName: r.names[r.host] || r.host, size: r.members.size,
+      playing: !!(t && r.state.playing), track: t ? { title: t.title, author: t.author, art: t.art } : null };
+  }
   roomOut(room) {
     return {
-      id: room.id, host: room.host,
+      id: room.id, host: room.host, code: room.code, name: room.name, public: !!room.public, party: !!room.party,
       members: [...room.members].map((id) => ({ id, name: room.names[id] || id, online: this.isOnline(id) })),
       pending: [...room.pending], state: room.state, serverTime: Date.now(),
     };
@@ -798,7 +882,7 @@ export class Hub extends DurableObject {
     this.sendTo(uid, { type: 'room', room: null });
     if (r.members.size === 0) { this.rooms.delete(r.id); return; }
     if (r.host === uid) r.host = [...r.members][0];
-    if (r.members.size === 1 && r.pending.size === 0) {
+    if (r.members.size === 1 && r.pending.size === 0 && !r.party) {
       const last = [...r.members][0];
       this.rooms.delete(r.id);
       this.sendTo(last, { type: 'room', room: null });
@@ -827,7 +911,7 @@ export class Hub extends DurableObject {
     return false;
   }
   closeIfEmpty(r, notify) {
-    if (r.members.size <= 1 && r.pending.size === 0 && !r.state.track) {
+    if (r.members.size <= 1 && r.pending.size === 0 && !r.state.track && !r.party) {
       this.rooms.delete(r.id);
       this.sendTo(notify, { type: 'room', room: null });
       return true;
@@ -849,12 +933,7 @@ export class Hub extends DurableObject {
       if (target.sample) return err(`@${to} is a sample profile and can't join syncs.`);
       if (!this.isOnline(to)) return err(`@${to} isn't online right now.`);
       if (this.userRoom(to)) return err(`@${to} is already in a sync.`);
-      let r = this.userRoom(uid);
-      if (!r) {
-        r = { id: randomHex(4), host: uid, members: new Set([uid]), pending: new Set(), names: { [uid]: name },
-          state: { track: null, playing: false, position: 0, ref: Date.now(), queue: [], index: 0, playlistId: null, heldBy: null }, chat: [] };
-        this.rooms.set(r.id, r);
-      }
+      const r = this.userRoom(uid) || this.newRoom(uid, name);
       if (r.pending.has(to)) return;
       r.pending.add(to);
       r.names[to] = target.name;
@@ -873,17 +952,34 @@ export class Hub extends DurableObject {
       if (!r) { ws.send(JSON.stringify({ type: 'notice', text: 'That sync has ended.' })); return this.persist(); }
       r.pending.delete(uid);
       if (m.accept) {
-        this.leaveRoom(uid);
-        r.members.add(uid);
-        r.names[uid] = name;
-        for (const id of r.members) if (id !== uid) this.sendTo(id, { type: 'notice', text: `@${uid} joined the sync.` });
-        this.sendTo(uid, { type: 'chat-history', messages: r.chat || [] });
-        this.roomSay(r, `@${uid} joined`);
+        if (r.members.size >= PARTY_MAX) { err('That party is full.'); return this.persist(); }
+        this.joinRoom(r, uid, name);
       } else {
         this.sendTo(inv.from, { type: 'notice', text: `@${uid} declined the sync.` });
         if (this.closeIfEmpty(r, inv.from)) return this.persist();
+        this.broadcastRoom(r);
       }
+      return this.persist();
+    }
+
+    // Start a party on purpose (it stays open even before anyone joins).
+    if (m.type === 'start') {
+      if (this.userRoom(uid)) return err('Leave your current sync first.');
+      const r = this.newRoom(uid, name, { party: true, isPublic: m.public !== false, title: m.name });
+      this.sendTo(uid, { type: 'chat-history', messages: [] });
+      this.roomSay(r, r.public ? `@${uid} started a public party` : `@${uid} started a party`);
       this.broadcastRoom(r);
+      return this.persist();
+    }
+
+    // Walk into a public party from its link or the Live parties list.
+    if (m.type === 'join') {
+      const r = this.roomByCode(m.code);
+      if (!r) return err('That party has ended.');
+      if (r.members.has(uid)) { this.broadcastRoom(r); return; }
+      if (!r.public) return err(`This party is invite-only. Ask @${r.host} to invite you.`);
+      if (r.members.size >= PARTY_MAX) return err('That party is full.');
+      this.joinRoom(r, uid, name);
       return this.persist();
     }
 
@@ -894,6 +990,17 @@ export class Hub extends DurableObject {
     const positionNow = () => (st.playing ? st.position + (now - st.ref) / 1000 : st.position);
 
     if (m.type === 'leave') { this.leaveRoom(uid); return this.persist(); }
+    // Host settings: name, and whether anyone with the link can join.
+    if (m.type === 'party') {
+      if (room.host !== uid) return err('Only the host can change the party settings.');
+      const wasPublic = room.public;
+      if (typeof m.public === 'boolean') room.public = m.public;
+      if (typeof m.name === 'string' && m.name.trim()) room.name = m.name.trim().slice(0, 40);
+      room.party = room.party || room.public;
+      if (wasPublic !== room.public) this.roomSay(room, room.public ? 'The party is now public. Anyone with the link can join.' : 'The party is now invite-only.');
+      this.broadcastRoom(room);
+      return this.persist();
+    }
     if (m.type === 'chat') {
       const text = String(m.text || '').replace(/\s+/g, ' ').trim().slice(0, CHAT_LEN);
       if (!text) return;

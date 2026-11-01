@@ -22,6 +22,12 @@ export default {
 };
 
 async function route(req, env, pathname) {
+  if (pathname.startsWith('/media/')) {
+    // Uploaded profile photos. Each upload gets a new name, so they can be cached for good.
+    const obj = await env.MEDIA.get(decodeURIComponent(pathname.slice(7)));
+    if (!obj) return new Response('Not found', { status: 404 });
+    return new Response(obj.body, { headers: { 'Content-Type': obj.httpMetadata?.contentType || 'image/jpeg', 'Cache-Control': 'public, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' } });
+  }
   if (pathname === '/.well-known/assetlinks.json') {
     // Lets the Android app (TWA) open full screen without a browser bar.
     const fingerprints = String(env.ANDROID_SHA256 || '').split(',').map((s) => s.trim()).filter(Boolean);

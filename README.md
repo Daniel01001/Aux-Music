@@ -20,6 +20,8 @@ Home has a **Fresh finds** row of trending Audius (and Jamendo) songs, which the
 - **Likes:** anyone can like a song. When a playlist's owner likes a song someone else added, that person earns 1 credit (once per song), and it shows as **Owner's pick**.
 - **Inbox:** saves "added a song" and "liked your pick" notes. When the person is offline, they also get a **web push** notification if they turned notifications on. Pushes carry no content: the service worker fetches the newest note from `/api/push/latest`.
 - **Account:** edit name, bio and photo; change your @ID (once every 30 days); see devices and sign them out; download your data; delete your account.
+- **Profile photos:** upload from the Edit profile sheet. The app crops a 400 px square before sending; the server checks the file really is an image and stores it in the R2 bucket `aux-media`, served at `/media/...`.
+- **Parties:** start one on the Sync page (public or invite-only). Public parties are listed under Live parties and anyone with the link (`/#join-CODE`) can join; they stay open while anyone is in them. Invite syncs still work as before.
 - **Live lyrics:** a Lyrics button in the full player shows lyrics from LRCLIB (free, community-written, not licensed). Lines light up in time with the shared clock, so everyone in a party sees the same line, and tapping a line jumps there. Set the `LYRICS` variable to `off` to switch lyrics off at once if a rights holder asks.
 - **Legal pages:** `/privacy` and `/terms`.
 
