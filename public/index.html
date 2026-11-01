@@ -55,16 +55,17 @@
       <button class="btn" id="lyBtn" type="button" aria-pressed="false" aria-controls="lyrics" hidden><svg><use href="#i-lyrics"/></svg>Lyrics</button>
       <button class="btn" id="saveBtn" type="button" hidden><svg><use href="#i-plus"/></svg>Save</button>
     </div>
-    <section class="lyrics hidden" id="lyrics" aria-label="Lyrics">
-      <ol id="lyLines"></ol>
-      <p class="ly-credit" id="lyCredit"></p>
-    </section>
     <div class="progress"><input type="range" id="seek" min="0" max="100" step="0.1" value="0" aria-label="Song position"><div class="times"><span id="tCur">0:00</span><span id="tDur">0:00</span></div></div>
     <div class="controls">
       <button class="icon-btn lg" id="prevBtn" type="button" aria-label="Previous song"><svg><use href="#i-prev"/></svg></button>
       <button class="play-btn" id="toggleBtn" type="button" aria-label="Play or pause"><svg><use href="#i-play"/></svg></button>
       <button class="icon-btn lg" id="nextBtn" type="button" aria-label="Next song"><svg><use href="#i-next"/></svg></button>
     </div>
+    <!-- Below the controls, so the video, title and buttons stay in view while the words scroll. -->
+    <section class="lyrics hidden" id="lyrics" aria-label="Lyrics">
+      <ol id="lyLines"></ol>
+      <p class="ly-credit" id="lyCredit"></p>
+    </section>
     <div class="sync-strip" id="syncStrip"></div>
     <ol class="queue" id="queueList"></ol>
   </div>

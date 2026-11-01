@@ -986,7 +986,11 @@
     ly.open = open; store.set('aux-lyrics', open ? '1' : null);
     $('#lyBtn').setAttribute('aria-pressed', open);
     $('#lyrics').classList.toggle('hidden', !open);
-    if (open) { ly.cur = -1; loadLyrics(); updateLyrics(); }
+    if (open) {
+      ly.cur = -1; loadLyrics(); updateLyrics();
+      // Bring the lyrics into view under the controls when they're switched on.
+      if (P.classList.contains('full')) requestAnimationFrame(() => $('#lyrics').scrollIntoView({ block: 'end', behavior: 'smooth' }));
+    }
   }
   $('#lyBtn').onclick = () => setLyricsOpen(!ly.open);
 

@@ -277,15 +277,17 @@ h2 { font-size: 20px; }
 
 /* Live lyrics */
 .pm-actions .btn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
-.lyrics { margin: 4px 0 18px; }
-.lyrics ol { list-style: none; margin: 0; padding: 30% 0; max-height: 46vh; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none;
+.lyrics { --ly-h: clamp(190px, 36dvh, 380px); margin: -4px 0 20px; }
+/* Fixed height with half-height padding, so the first and last lines can sit in the middle too.
+   position: relative makes line offsets measure from the list itself, which the centring relies on. */
+.lyrics ol { position: relative; list-style: none; margin: 0; height: var(--ly-h); padding: calc(var(--ly-h) / 2 - 22px) 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none;
   mask-image: linear-gradient(transparent, #000 18%, #000 82%, transparent); -webkit-mask-image: linear-gradient(transparent, #000 18%, #000 82%, transparent); }
 .lyrics ol::-webkit-scrollbar { display: none; }
 .lyrics li { font-family: var(--font-display); font-weight: 700; font-size: 24px; line-height: 1.25; letter-spacing: -0.01em; padding: 7px 0; color: var(--muted); opacity: .55; transition: color .3s, opacity .3s, transform .3s; transform-origin: left center; text-wrap: balance; }
 .lyrics li.tap { cursor: pointer; }
 .lyrics li.past { opacity: .35; }
 .lyrics li.on { color: var(--text); opacity: 1; transform: scale(1.03); }
-.lyrics ol.plain { padding: 8px 0; }
+.lyrics ol.plain { padding: 8px 0; height: auto; max-height: var(--ly-h); }
 .lyrics ol.plain li { font-family: var(--font-body); font-weight: 500; font-size: 17px; opacity: .9; color: var(--text); padding: 2px 0; }
 .lyrics li.ly-msg { font-family: var(--font-body); font-size: 15px; font-weight: 500; opacity: 1; text-align: center; padding: 24px 0; }
 .ly-credit { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
