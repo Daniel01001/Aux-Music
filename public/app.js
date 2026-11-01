@@ -6,6 +6,23 @@
   // A song: { id: "yt:<videoId>" | "au:<audiusId>", source, sourceId, title, author, art }
   const art = (s) => esc(s?.art || '');
   const SOURCE_NAME = { yt: 'YouTube Music', au: 'Audius', jm: 'Jamendo' };
+  // Search boxes: free sources (Audius, Jamendo) and pasted links search as you type. A YouTube
+  // search costs 100 of 10,000 daily quota units, so it only runs when you press Search or Enter.
+  const isLink = (v) => /^https?:\/\/|youtu\.?be|audius\.co|jamendo\.com|^[\w-]{11}$/.test(v);
+  function typeToSearch(input, out, getSource, run, instant, onEmpty) {
+    let t;
+    input.addEventListener('input', () => {
+      clearTimeout(t);
+      const v = input.value.trim();
+      if (!v) return onEmpty ? onEmpty() : (out.innerHTML = '');
+      if (getSource() !== 'yt' || instant(v)) { t = setTimeout(run, 350); return; }
+      out.innerHTML = `<button class="btn primary block yt-go" type="button"><svg><use href="#i-search"/></svg>Search YouTube Music for "${esc(v.slice(0, 40))}"</button>`;
+      out.querySelector('.yt-go').onclick = run;
+    });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); clearTimeout(t); if (input.value.trim()) run(); } });
+  }
+  // When YouTube's daily search quota runs out, the server sends independent artists instead.
+  const ytLimitText = (r) => `YouTube search has reached today's limit and is back at ${new Date(r.resetsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. Here are independent artists instead. Pasting a YouTube link still works.`;
   const srcTag = (s) => (s.source && s.source !== 'yt' ? `<span class="tag">${SOURCE_NAME[s.source]}</span> ` : '');
   const eqBars = '<span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>';
   const hue = (s) => [...String(s)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
@@ -366,7 +383,7 @@
       <div class="seg" role="tablist" aria-label="Where to search" style="--n:${sources.length}">
         ${sources.map((s) => `<button type="button" role="tab" data-src="${s}" aria-selected="false">${SOURCE_NAME[s]}</button>`).join('')}
       </div>
-      <div class="field"><label for="sq">Search, or paste a song, album or playlist link</label><input class="input" id="sq" placeholder="Song or artist" autocapitalize="none" autocomplete="off"></div>
+      <div class="field"><label for="sq">Search, or paste a song, album or playlist link</label><input class="input" id="sq" placeholder="Song or artist" autocapitalize="none" autocomplete="off" enterkeyhint="search"></div>
       <div id="sres"></div>
       <div class="error" id="serr"></div>
       <p class="muted small" style="margin:0" id="snote"></p>
@@ -406,7 +423,7 @@
 
       const isCollection = (v) => (/[?&]list=/.test(v) && !/[?&]v=/.test(v)) || /audius\.co\/[^/]+\/(album|playlist)\//.test(v);
       let t, seq = 0;
-      q.oninput = () => { clearTimeout(t); t = setTimeout(lookup, 350); };
+      typeToSearch(q, out, () => source, () => lookup(), (v) => isCollection(v) || isLink(v));
       async function lookup() {
         err.textContent = ''; const v = q.value.trim(); if (!v) { shown = []; out.innerHTML = ''; return; }
         const mySeq = ++seq;
@@ -422,8 +439,9 @@
             const r = await api(`/api/search?source=${source}&q=${encodeURIComponent(v)}`);
             if (mySeq !== seq) return;
             if (!r.enabled) { out.innerHTML = ''; err.textContent = 'YouTube search is not switched on yet. Paste a link: open the song in YouTube Music, tap Share, then Copy link.'; return; }
-            if (!r.results.length) { out.innerHTML = ''; err.textContent = `Nothing found on ${SOURCE_NAME[source]}.`; return; }
+            if (!r.results.length) { out.innerHTML = ''; err.textContent = r.limited ? ytLimitText(r) : `Nothing found on ${SOURCE_NAME[source]}.`; return; }
             show(r.results);
+            if (r.limited) out.insertAdjacentHTML('afterbegin', `<p class="limit-note">${esc(ytLimitText(r))}</p>`);
           }
         } catch (e) { if (mySeq === seq) { out.innerHTML = ''; err.textContent = e.message; } }
       }
@@ -675,7 +693,7 @@
     sheet(`
       <div class="sheet-top"><h2>${esc(title)}</h2><button class="icon-btn" data-close aria-label="Close"><svg><use href="#i-close"/></svg></button></div>
       <div class="seg" role="tablist" aria-label="Where to search" style="--n:${sources.length}">${sources.map((s) => `<button type="button" role="tab" data-src="${s}" aria-selected="false">${SOURCE_NAME[s]}</button>`).join('')}</div>
-      <input class="input" id="psq" placeholder="Search a song or paste a link" autocapitalize="none" autocomplete="off" aria-label="Search">
+      <input class="input" id="psq" placeholder="Search a song or paste a link" autocapitalize="none" autocomplete="off" aria-label="Search" enterkeyhint="search">
       <div id="psres"></div><div class="error" id="pserr"></div>
       ${note ? `<p class="muted small" style="margin:0">${esc(note)}</p>` : ''}`,
     (el, close) => {
@@ -699,13 +717,14 @@
           const r = await api(`/api/search?source=${source}&q=${encodeURIComponent(v)}`);
           if (mySeq !== seq) return;
           if (!r.enabled) { out.innerHTML = ''; err.textContent = 'YouTube search is off. Paste a link instead.'; return; }
-          if (!r.results.length) { out.innerHTML = ''; err.textContent = `Nothing found on ${SOURCE_NAME[source]}.`; return; }
+          if (!r.results.length) { out.innerHTML = ''; err.textContent = r.limited ? ytLimitText(r) : `Nothing found on ${SOURCE_NAME[source]}.`; return; }
           show(r.results);
+          if (r.limited) out.insertAdjacentHTML('afterbegin', `<p class="limit-note">${esc(ytLimitText(r))}</p>`);
         } catch (e) { if (mySeq === seq) { out.innerHTML = ''; err.textContent = e.message; } }
       }
       el.querySelectorAll('[data-src]').forEach((b) => b.onclick = () => { source = b.dataset.src; store.set('aux-src', source); el.querySelectorAll('[data-src]').forEach((x) => x.setAttribute('aria-selected', x === b)); lookup(); });
       el.querySelector(`[data-src="${source}"]`)?.setAttribute('aria-selected', 'true');
-      q.oninput = () => { clearTimeout(t); t = setTimeout(lookup, 350); };
+      typeToSearch(q, out, () => source, () => lookup(), isLink, () => fresh());
       q.focus(); fresh();
     });
   }

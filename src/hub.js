@@ -12,6 +12,15 @@ const AUDIUS = 'https://api.audius.co/v1';
 const JAMENDO = 'https://api.jamendo.com/v3.0';
 const APP_NAME = 'aux-music';
 const SEARCH_TTL = 24 * 3600_000;
+const YT_SEARCH_TTL = 7 * 24 * 3600_000;
+// YouTube's daily quota resets at midnight Pacific time.
+function nextPacificMidnight() {
+  const now = new Date();
+  const la = new Date(now.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+  const offset = now.getTime() - la.getTime();
+  la.setHours(24, 0, 0, 0);
+  return la.getTime() + offset;
+}
 const PHOTO_MAX = 400 * 1024;
 // Recognise an image by its first bytes, not by what the upload claims to be.
 function imageType(b) {
@@ -294,10 +303,22 @@ export class Hub extends DurableObject {
         return (j?.results || []).map(jamendoTrack).filter((t) => t.playable).map(publicTrack);
       });
     }
-    // search.list costs 100 quota units, so every query is cached for a day.
-    return this.cached(`yt:${q.toLowerCase()}`, SEARCH_TTL, async () => {
-      const j = await fetchJson(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoCategoryId=10&videoEmbeddable=true&maxResults=10&q=${encodeURIComponent(q)}&key=${this.env.YT_API_KEY}`);
-      if (!j?.items) throw new Error('search failed');
+    // search.list costs 100 of the 10,000 daily quota units, so each query is cached for a week,
+    // and once Google says the quota is used up we stop asking until it resets.
+    return this.cached(`yt:${q.toLowerCase()}`, YT_SEARCH_TTL, async () => {
+      // Only fresh searches cost quota; cached ones above keep working while we're limited.
+      if (Date.now() < (this.ytLimitedUntil || 0)) throw Object.assign(new Error('quotaExceeded'), { quota: true });
+      const r = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoCategoryId=10&videoEmbeddable=true&maxResults=10&q=${encodeURIComponent(q)}&key=${this.env.YT_API_KEY}`, { signal: AbortSignal.timeout(8000) });
+      const j = await r.json().catch(() => null);
+      if (!j?.items) {
+        const reason = j?.error?.errors?.[0]?.reason || j?.error?.status || `HTTP ${r.status}`;
+        console.error(`YouTube search failed: ${reason} — ${j?.error?.message || ''}`);
+        if (/quota|dailyLimit|rateLimit/i.test(reason)) {
+          this.ytLimitedUntil = nextPacificMidnight();
+          throw Object.assign(new Error(reason), { quota: true });
+        }
+        throw new Error(reason);
+      }
       const list = j.items.map((i) => ({
         id: `yt:${i.id.videoId}`, source: 'yt', sourceId: i.id.videoId, title: decode(i.snippet.title),
         author: cleanAuthor(decode(i.snippet.channelTitle)), art: ytArt(i.id.videoId),
@@ -540,12 +561,21 @@ export class Hub extends DurableObject {
     }
 
     if (m === 'GET' && path === '/api/search') {
-      const q = String(url.searchParams.get('q') || '').trim().slice(0, 100);
+      // Tidy the words so "Tyla  Water " and "tyla water" share one cached (quota-saving) result.
+      const q = String(url.searchParams.get('q') || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 100);
       const source = ['au', 'jm'].includes(url.searchParams.get('source')) ? url.searchParams.get('source') : 'yt';
       if ((source === 'yt' && !this.env.YT_API_KEY) || (source === 'jm' && !this.env.JAMENDO_CLIENT_ID)) return json({ enabled: false, results: [] });
       if (!q) return json({ enabled: true, results: [] });
       try { return json({ enabled: true, results: await this.search(q, source) }); }
-      catch { return fail(502, 'Song search is unavailable right now. Paste a link instead.'); }
+      catch (e) {
+        if (source === 'yt' && e.quota) {
+          // Out of YouTube quota for today: offer independent artists for the same words instead.
+          const results = await this.search(q, 'au').catch(() => []);
+          return json({ enabled: true, limited: true, resetsAt: this.ytLimitedUntil || nextPacificMidnight(), results });
+        }
+        // Include Google's short reason code (e.g. "keyInvalid") so problems can be diagnosed from the app.
+        return json({ error: 'Song search is unavailable right now. Paste a link instead.', reason: String(e.message || '').slice(0, 80) }, 502);
+      }
     }
 
     // ----- parties -----
