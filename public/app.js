@@ -9,20 +9,35 @@
   // Search boxes: free sources (Audius, Jamendo) and pasted links search as you type. A YouTube
   // search costs 100 of 10,000 daily quota units, so it only runs when you press Search or Enter.
   const isLink = (v) => /^https?:\/\/|youtu\.?be|audius\.co|jamendo\.com|^[\w-]{11}$/.test(v);
+  // On the YouTube tab, typing shows free suggestions (searches people already made) and a button
+  // for a new search, with how many new searches you have left today.
   function typeToSearch(input, out, getSource, run, instant, onEmpty) {
-    let t;
+    let t, seq = 0;
     input.addEventListener('input', () => {
       clearTimeout(t);
       const v = input.value.trim();
       if (!v) return onEmpty ? onEmpty() : (out.innerHTML = '');
       if (getSource() !== 'yt' || instant(v)) { t = setTimeout(run, 350); return; }
-      out.innerHTML = `<button class="btn primary block yt-go" type="button"><svg><use href="#i-search"/></svg>Search YouTube Music for "${esc(v.slice(0, 40))}"</button>`;
-      out.querySelector('.yt-go').onclick = run;
+      const paint = (s = { suggestions: [] }) => {
+        out.innerHTML = `${s.suggestions.length ? `<div class="suggest"><div class="small muted">Already searched, free to open:</div>${s.suggestions.map((q) => `<button type="button" class="chip" data-sq="${esc(q)}"><svg><use href="#i-search"/></svg>${esc(q)}</button>`).join('')}</div>` : ''}
+          <button class="btn primary block yt-go" type="button"><svg><use href="#i-search"/></svg>Search YouTube Music for "${esc(v.slice(0, 40))}"</button>
+          ${s.left !== undefined ? `<p class="small muted" style="margin:6px 0 0;text-align:center">${s.left ? `${s.left} new YouTube ${s.left === 1 ? 'search' : 'searches'} left today` : "You've used today's new YouTube searches. Suggestions and pasted links still work."}</p>` : ''}`;
+        out.querySelector('.yt-go').onclick = run;
+        out.querySelectorAll('[data-sq]').forEach((b) => b.onclick = () => { input.value = b.dataset.sq; run(); });
+      };
+      paint();
+      const mySeq = ++seq;
+      t = setTimeout(() => api(`/api/search/suggest?q=${encodeURIComponent(v)}`).then((s) => { if (mySeq === seq && input.value.trim() === v) paint(s); }).catch(() => {}), 250);
     });
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); clearTimeout(t); if (input.value.trim()) run(); } });
   }
   // When YouTube's daily search quota runs out, the server sends independent artists instead.
-  const ytLimitText = (r) => `YouTube search has reached today's limit and is back at ${new Date(r.resetsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. Here are independent artists instead. Pasting a YouTube link still works.`;
+  const ytLimitText = (r) => {
+    const at = new Date(r.resetsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return r.limited === 'you'
+      ? `You've used your ${r.perPerson} new YouTube searches for today (more at ${at}). Here are independent artists instead. Earlier searches, suggestions and pasted links still work.`
+      : `YouTube search has reached today's limit and is back at ${at}. Here are independent artists instead. Pasting a YouTube link still works.`;
+  };
   const srcTag = (s) => (s.source && s.source !== 'yt' ? `<span class="tag">${SOURCE_NAME[s.source]}</span> ` : '');
   const eqBars = '<span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>';
   const hue = (s) => [...String(s)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
@@ -220,7 +235,7 @@
         <div class="parties" id="liveHomeList"></div>
       </section>
       <section class="section" id="disc" hidden>
-        <div class="section-head"><div><h2>Fresh finds</h2><div class="small muted">Independent artists. Keeps playing with your screen off.</div></div></div>
+        <div class="section-head"><div><h2>Fresh finds</h2><div class="small muted">Picked for you from what you play. Songs you don't play swap out after 2 days.</div></div></div>
         <div class="rail" id="discRail"></div>
       </section>
       <section class="section">
@@ -237,7 +252,7 @@
         <div class="disc-card ${engine.state.track?.id === t.id ? 'now' : ''}" data-id="${esc(t.id)}">
           <button class="disc-art" type="button" data-di="${i}" aria-label="Play ${esc(t.title)}"><img src="${art(t)}" alt="" loading="lazy">${eqBars}</button>
           <button class="disc-save" type="button" data-ds="${i}" aria-label="Save ${esc(t.title)} to a playlist"><svg><use href="#i-plus"/></svg></button>
-          <div class="t">${esc(t.title)}</div><div class="s">${esc(t.author)}</div>
+          <div class="t">${esc(t.title)}</div><div class="s">${esc(t.author)}</div>${t.because ? `<div class="why">${esc(t.because)}</div>` : ''}
         </div>`).join('');
       $('#disc').hidden = false;
       rail.querySelectorAll('[data-di]').forEach((b) => b.onclick = () => playQueue(tracks, +b.dataset.di, null, true));
@@ -611,6 +626,7 @@
         <div class="section-head"><h2>Party chat</h2></div>
         ${reactBar()}
         <ol class="chat" id="chatList" aria-live="polite"></ol>
+        <div class="reply-bar" id="replyBar" hidden></div>
         <form class="inline-form chat-form" id="chatF" novalidate>
           <input class="input" id="chatQ" maxlength="300" placeholder="Say something to the party" autocomplete="off" enterkeyhint="send" aria-label="Message">
           <button class="btn primary" type="submit" style="height:48px">Send</button>
@@ -622,8 +638,10 @@
       e.preventDefault();
       const q = $('#chatQ'), text = q.value.trim();
       if (!text) return;
-      send({ type: 'chat', text }); q.value = '';
+      send({ type: 'chat', text, ...(replyTo ? { replyTo: replyTo.id } : {}) }); q.value = '';
+      setReply(null);
     };
+    setReply(null);
     chatUnread = 0; paintSyncBadge();
     wireInviteForm();
   }
@@ -790,13 +808,51 @@
   const wireReactBar = (root) => root.querySelectorAll('[data-react]').forEach((b) => b.onclick = () => { send({ type: 'react', kind: b.dataset.react }); b.classList.remove('pop'); void b.offsetWidth; b.classList.add('pop'); });
   const clock = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-  function renderChat() {
+  // Each message: an optional quote of the one it replies to, the text, its reactions, and (once
+  // tapped) a small bar to react with an icon or reply.
+  let replyTo = null, openMsg = null;
+  const reactIcon = (k) => REACTIONS.find(([key]) => key === k)?.[2];
+  function messageHtml(c) {
+    if (!c.from) return `<li class="system">${esc(c.text)} · ${clock(c.at)}</li>`;
+    const mine = c.from === me?.id;
+    const reacts = Object.entries(c.reactions || {}).filter(([, who]) => who.length);
+    return `<li class="${mine ? 'mine' : ''}" data-msg="${c.id}">${mine ? '' : avatar({ id: c.from, name: c.name }, 'sm')}
+      <div class="msg-col">
+        <div class="bubble" tabindex="0" role="button" aria-label="Message from ${esc(c.name || c.from)}. Tap to react or reply.">
+          ${c.reply ? `<button class="quote" type="button" data-jump="${c.reply.id}"><b>${c.reply.from === me?.id ? 'You' : esc(c.reply.name || c.reply.from)}</b>${esc(c.reply.text)}</button>` : ''}
+          ${mine ? '' : `<div class="who">${esc(c.name || c.from)}</div>`}<div>${esc(c.text)}</div><time>${clock(c.at)}</time>
+        </div>
+        ${reacts.length ? `<div class="msg-reacts">${reacts.map(([k, who]) => `<button type="button" class="mr r-${k} ${who.includes(me?.id) ? 'on' : ''}" data-mr="${c.id}" data-kind="${k}" aria-label="${who.length} ${k}${who.includes(me?.id) ? ', including you' : ''}"><svg><use href="#${reactIcon(k)}"/></svg>${who.length}</button>`).join('')}</div>` : ''}
+        ${openMsg === c.id ? `<div class="msg-actions">${REACTIONS.map(([k, label, icon]) => `<button type="button" class="r-${k}" data-mr="${c.id}" data-kind="${k}" aria-label="React ${label}"><svg><use href="#${icon}"/></svg></button>`).join('')}<button type="button" class="reply-btn" data-reply="${c.id}">Reply</button></div>` : ''}
+      </div></li>`;
+  }
+  function renderChat(keepScroll = false) {
     const list = $('#chatList'); if (!list) return;
-    list.innerHTML = chat.length ? chat.map((c) => c.from
-      ? `<li class="${c.from === me?.id ? 'mine' : ''}">${c.from === me?.id ? '' : avatar({ id: c.from, name: c.name }, 'sm')}<div class="bubble">${c.from === me?.id ? '' : `<div class="who">${esc(c.name || c.from)}</div>`}<div>${esc(c.text)}</div><time>${clock(c.at)}</time></div></li>`
-      : `<li class="system">${esc(c.text)} · ${clock(c.at)}</li>`).join('')
-      : '<li class="system">No messages yet. Say hi, or send a reaction.</li>';
-    list.scrollTop = list.scrollHeight;
+    const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+    list.innerHTML = chat.length ? chat.map(messageHtml).join('') : '<li class="system">No messages yet. Say hi, or send a reaction.</li>';
+    if (!keepScroll || atBottom) list.scrollTop = list.scrollHeight;
+    list.querySelectorAll('.bubble').forEach((b) => {
+      const id = b.closest('[data-msg]').dataset.msg;
+      const toggle = (e) => { if (e.target.closest('[data-jump]')) return; openMsg = openMsg === id ? null : id; renderChat(true); };
+      b.onclick = toggle; b.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(e); } };
+    });
+    list.querySelectorAll('[data-mr]').forEach((b) => b.onclick = () => { send({ type: 'chat-react', id: b.dataset.mr, kind: b.dataset.kind }); openMsg = null; });
+    list.querySelectorAll('[data-reply]').forEach((b) => b.onclick = () => { setReply(chat.find((c) => c.id === b.dataset.reply)); openMsg = null; renderChat(true); $('#chatQ')?.focus(); });
+    list.querySelectorAll('[data-jump]').forEach((b) => b.onclick = () => {
+      const target = list.querySelector(`[data-msg="${b.dataset.jump}"] .bubble`);
+      if (!target) return toast('That message has scrolled out of the chat.');
+      target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      target.classList.remove('flash'); void target.offsetWidth; target.classList.add('flash');
+    });
+  }
+  function setReply(c) {
+    replyTo = c || null;
+    const bar = $('#replyBar'); if (!bar) return;
+    bar.hidden = !replyTo;
+    if (replyTo) {
+      bar.innerHTML = `<div style="min-width:0"><b>Replying to ${replyTo.from === me?.id ? 'yourself' : esc(replyTo.name || replyTo.from)}</b><span>${esc(replyTo.text)}</span></div><button class="icon-btn" type="button" id="replyX" aria-label="Cancel reply"><svg><use href="#i-close"/></svg></button>`;
+      $('#replyX').onclick = () => setReply(null);
+    }
   }
   function paintSyncBadge() { $('#syncBadge').classList.toggle('chat', chatUnread > 0); }
 
@@ -1213,6 +1269,15 @@
         api('/api/listen', { method: 'POST', body: { playlistId: st.playlistId, trackId: st.track.id } }).then((r) => { if (r.earned) { setCredits(r.credits); toast('You earned 1 credit for listening.'); } }).catch(() => {});
       }
     }
+    // 10 seconds in counts as a real play: it keeps the song in your Fresh finds.
+    if (status === 'playing') {
+      if (engine.heardId !== st.track.id) { engine.heardId = st.track.id; engine.heard = 0; }
+      engine.heard += dt;
+      if (engine.heard >= 10 && engine.playedReported !== st.track.id) {
+        engine.playedReported = st.track.id;
+        api('/api/played', { method: 'POST', body: { trackId: st.track.id } }).catch(() => {});
+      }
+    }
   }
   setInterval(() => { tick(); updateProgress(); loadLyrics(); }, 500);
 
@@ -1387,12 +1452,17 @@
     if (m.type === 'chat-history') { chat = m.messages; return renderChat(); }
     if (m.type === 'chat') {
       chat.push(m.msg); if (chat.length > 60) chat.shift();
-      if ($('#chatList')) return renderChat();
+      if ($('#chatList')) return renderChat(m.msg.from !== me?.id);
       // Away from the Sync page: count it, and show other people's messages briefly.
       if (m.msg.from && m.msg.from !== me?.id) { chatUnread++; paintSyncBadge(); toast(`${m.msg.name || '@' + m.msg.from}: ${m.msg.text}`); }
       return;
     }
     if (m.type === 'react') return floatReaction(m.kind, m.from);
+    if (m.type === 'chat-update') {
+      const i = chat.findIndex((c) => c.id === m.msg.id);
+      if (i >= 0) { chat[i] = m.msg; renderChat(true); }
+      return;
+    }
     if (m.type === 'room') {
       const was = room; room = m.room;
       if (!room) { chat = []; chatUnread = 0; paintSyncBadge(); }
@@ -1443,8 +1513,43 @@
     paintMeAvatar(); setUnread(me.unread);
     connect();
     if (!location.hash) location.hash = 'home'; else route();
+    setTimeout(handleShared, 600); // a song shared from another app (kept across sign-in)
   }
   boot();
+
+  // ---------- Share to Aux ----------
+  // The installed app appears in the phone's Share menu (YouTube Music, Audius, browser...).
+  // A shared link costs 1 YouTube quota unit to look up, against 100 for a search.
+  if (location.pathname === '/share') {
+    const p = new URLSearchParams(location.search);
+    const link = [p.get('url'), p.get('text'), p.get('title')].join(' ').match(/https?:\/\/\S+/)?.[0];
+    if (link) store.set('aux-shared', link);
+    history.replaceState(null, '', '/#home');
+  }
+  async function handleShared() {
+    const link = store.get('aux-shared');
+    if (!link || !token) return;
+    store.set('aux-shared', null);
+    let t;
+    try { t = await api(`/api/resolve?url=${encodeURIComponent(link)}`); }
+    catch (e) { return toast(e.message || "Aux couldn't open that link."); }
+    const inParty = !!room?.party;
+    sheet(`
+      <div class="sheet-top"><h2>Shared to Aux</h2><button class="icon-btn" data-close aria-label="Close"><svg><use href="#i-close"/></svg></button></div>
+      <div class="preview"><img src="${art(t)}" alt=""><div style="min-width:0"><div class="pm-title">${esc(t.title)}</div><div class="pm-sub">${srcTag(t)}${esc(t.author)}</div></div></div>
+      <div class="row-actions">
+        <button class="btn primary" id="shPlay" type="button" style="flex:1"><svg><use href="#i-play"/></svg>${inParty ? (canControl() ? 'Play next in the party' : 'Request in the party') : 'Play now'}</button>
+        <button class="btn" id="shSave" type="button" style="flex:1"><svg><use href="#i-plus"/></svg>Save to a playlist</button>
+      </div>`,
+    (el, close) => {
+      $('#shPlay', el).onclick = () => {
+        close();
+        if (inParty) { send({ type: 'request', source: t.source, sourceId: t.sourceId }); toast(canControl() ? `"${t.title}" plays next.` : `Requested "${t.title}".`); }
+        else playQueue([t], 0, null);
+      };
+      $('#shSave', el).onclick = () => { close(); saveSong(t); };
+    });
+  }
 
   // ---------- staying up to date ----------
   // An open app keeps running old code after a deploy. Check now and then; refresh straight away

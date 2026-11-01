@@ -27,6 +27,7 @@ a { color: inherit; text-decoration: none; }
 svg { width: 22px; height: 22px; flex: none; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 .hidden { display: none !important; }
+[hidden] { display: none !important; } /* so a display rule on a class can't un-hide it */
 
 #app { max-width: 560px; margin: 0 auto; min-height: 100%; padding: calc(var(--safe-t) + 0px) 0 calc(var(--tab-h) + var(--mini-h) + var(--safe-b) + 24px); }
 
@@ -333,6 +334,36 @@ h2 { font-size: 20px; }
 .player.locked .progress input { pointer-events: none; }
 
 .limit-note { margin: 0 0 8px; padding: 10px 12px; border-radius: 12px; font-size: 13px; background: color-mix(in srgb, var(--accent) 14%, var(--surface)); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+
+/* Chat: replies and reactions on messages */
+.chat li { align-items: flex-start; }
+.msg-col { display: flex; flex-direction: column; gap: 4px; min-width: 0; max-width: 100%; }
+.mine .msg-col { align-items: flex-end; }
+.chat .bubble { cursor: pointer; }
+.chat .bubble.flash { animation: flash 1.2s ease; }
+@keyframes flash { 0%, 40% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 0 transparent; } }
+.quote { display: block; width: 100%; text-align: left; margin: 0 0 4px; padding: 5px 8px; border: 0; border-left: 3px solid var(--accent); border-radius: 6px; background: color-mix(in srgb, var(--text) 8%, transparent); color: inherit; font-size: 12.5px; opacity: .9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.quote b { display: block; font-size: 11.5px; }
+.mine .quote { border-left-color: var(--on-accent); }
+.msg-reacts { display: flex; gap: 4px; flex-wrap: wrap; }
+.mr { display: inline-flex; align-items: center; gap: 3px; height: 24px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); font-size: 12px; font-weight: 600; color: var(--text); }
+.mr svg { width: 14px; height: 14px; }
+.mr.r-love svg { color: #EF6B8A; } .mr.r-fire svg { color: #F2894A; } .mr.r-star svg { color: #F2C94C; } .mr.r-energy svg { color: #5CC8B5; }
+.mr.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, var(--surface)); }
+.msg-actions { display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); }
+.msg-actions button { width: 34px; height: 30px; border: 0; border-radius: 999px; background: none; display: grid; place-items: center; }
+.msg-actions button svg { width: 18px; height: 18px; }
+.msg-actions .reply-btn { width: auto; padding: 0 10px; font-size: 12.5px; font-weight: 600; color: var(--text); }
+.reply-bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-bottom: 8px; border-radius: 12px; background: var(--surface); border-left: 3px solid var(--accent); }
+.reply-bar > div { flex: 1; display: flex; flex-direction: column; font-size: 13px; }
+.reply-bar span { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Search suggestions and Fresh finds reasons */
+.suggest { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; align-items: center; }
+.suggest .small { width: 100%; }
+.suggest .chip { display: inline-flex; align-items: center; gap: 5px; }
+.suggest .chip svg { width: 14px; height: 14px; color: var(--muted); }
+.disc-card .why { font-size: 11px; color: var(--accent); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* "New version" bar, above everything but the toasts */
 .update-bar { position: fixed; z-index: 55; left: 50%; transform: translateX(-50%); top: calc(var(--safe-t) + 10px); width: min(calc(100% - 32px), 528px); padding: 12px 16px; border: 0; border-radius: 14px; background: var(--accent); color: var(--on-accent); font-weight: 600; font-size: 14px; box-shadow: 0 10px 30px -10px rgb(0 0 0 / .5); animation: drop .25s ease-out; }

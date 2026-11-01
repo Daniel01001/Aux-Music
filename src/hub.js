@@ -13,6 +13,9 @@ const JAMENDO = 'https://api.jamendo.com/v3.0';
 const APP_NAME = 'aux-music';
 const SEARCH_TTL = 24 * 3600_000;
 const YT_SEARCH_TTL = 7 * 24 * 3600_000;
+const YT_PER_PERSON = 15; // fresh YouTube searches per person per day (cached ones don't count)
+// Today's date in Pacific time, the day YouTube's quota counts by.
+const pacificDay = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
 // YouTube's daily quota resets at midnight Pacific time.
 function nextPacificMidnight() {
   const now = new Date();
@@ -127,7 +130,7 @@ async function fetchJson(url, ms = 8000, tries = 2) {
 
 const audiusTrack = (t) => t && ({
   id: `au:${t.id}`, source: 'au', sourceId: t.id, title: t.title, author: t.user?.name?.trim() || '',
-  art: t.artwork?.['480x480'] || t.artwork?.['150x150'] || '', duration: t.duration,
+  art: t.artwork?.['480x480'] || t.artwork?.['150x150'] || '', duration: t.duration, genre: t.genre || null,
   playable: t.is_streamable !== false && !t.is_stream_gated && !t.is_delete,
 });
 const jamendoTrack = (t) => t && ({
@@ -135,6 +138,32 @@ const jamendoTrack = (t) => t && ({
   art: t.image || t.album_image || '', duration: t.duration, license: t.license_ccurl || null, playable: !!t.audio,
 });
 const publicTrack = ({ playable, duration, ...t }) => t;
+
+// ---------- personal Fresh finds ----------
+const FRESH_SIZE = 16;
+const FRESH_IDLE = 2 * 24 * 3600_000;  // not played for 2 days: swap it out
+const FRESH_REST = 14 * 24 * 3600_000; // and don't bring it back for 2 weeks
+// Words in titles and artist names that point to a style: an Audius genre to browse and/or words to search.
+const STYLE_HINTS = [
+  [/amapiano|log ?drum/i, { genre: 'House', q: 'amapiano', label: 'amapiano' }],
+  [/gqom/i, { genre: 'Electronic', q: 'gqom', label: 'gqom' }],
+  [/afro ?house|deep house|soulful house/i, { genre: 'Deep House', q: 'afro house', label: 'afro house' }],
+  [/\bhouse\b/i, { genre: 'House', label: 'house' }],
+  [/afrobeat|afro ?pop|naija|afro ?fusion/i, { genre: 'World', q: 'afrobeats', label: 'afrobeats' }],
+  [/hip.?hop|\brap\b|drill|\btrap\b/i, { genre: 'Hip-Hop/Rap', label: 'hip-hop' }],
+  [/r&b|\brnb\b|\bsoul\b/i, { genre: 'R&B/Soul', label: 'R&B' }],
+  [/lo.?fi/i, { genre: 'Lo-Fi', label: 'lo-fi' }],
+  [/gospel|worship|praise/i, { genre: 'Devotional', q: 'gospel', label: 'gospel' }],
+  [/jazz/i, { genre: 'Jazz', label: 'jazz' }],
+  [/dancehall/i, { genre: 'Dancehall', label: 'dancehall' }],
+  [/reggae/i, { genre: 'Reggae', label: 'reggae' }],
+  [/techno/i, { genre: 'Techno', label: 'techno' }],
+  [/drum ?(&|and|n) ?bass|\bdnb\b/i, { genre: 'Drum & Bass', label: 'drum & bass' }],
+  [/\brock\b/i, { genre: 'Rock', label: 'rock' }],
+  [/latin|reggaeton/i, { genre: 'Latin', label: 'latin' }],
+  [/\bpop\b/i, { genre: 'Pop', label: 'pop' }],
+];
+const top = (scores, n) => Object.entries(scores).sort((a, b) => b[1] - a[1]).slice(0, n).map(([k]) => k);
 
 // ---------- Durable Object ----------
 export class Hub extends DurableObject {
@@ -188,9 +217,9 @@ export class Hub extends DurableObject {
     return t ? trackOut(t) : null;
   }
   trackUpsert(t, now = Date.now()) {
-    return this.db.prepare(`INSERT INTO tracks (id, source, source_id, title, author, art, duration, license, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET title = excluded.title, author = excluded.author, art = excluded.art, license = excluded.license`)
-      .bind(t.id, t.source, t.sourceId, String(t.title).slice(0, 160), String(t.author).slice(0, 100), t.art, t.duration || null, t.license || null, now);
+    return this.db.prepare(`INSERT INTO tracks (id, source, source_id, title, author, art, duration, license, genre, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET title = excluded.title, author = excluded.author, art = excluded.art, license = excluded.license, genre = coalesce(excluded.genre, tracks.genre)`)
+      .bind(t.id, t.source, t.sourceId, String(t.title).slice(0, 160), String(t.author).slice(0, 100), t.art, t.duration || null, t.license || null, t.genre || null, now);
   }
   meUser(u) {
     return { ...this.publicUser(u), credits: u.credits, google: !!u.google_sub, hasGooglePhoto: !!u.google_picture,
@@ -304,13 +333,18 @@ export class Hub extends DurableObject {
 
   async cached(key, ttl, load) {
     const hit = await this.db.prepare('SELECT results, at FROM search_cache WHERE key = ?').bind(key).first();
-    if (hit && Date.now() - hit.at < ttl) return JSON.parse(hit.results);
+    if (hit && Date.now() - hit.at < ttl) {
+      // Count reuse of YouTube searches: popular ones are refreshed overnight and offered as suggestions.
+      if (key.startsWith('yt:')) await this.db.prepare('UPDATE search_cache SET hits = hits + 1 WHERE key = ?').bind(key).run();
+      return JSON.parse(hit.results);
+    }
     const results = await load();
-    await this.db.prepare('INSERT OR REPLACE INTO search_cache (key, results, at) VALUES (?, ?, ?)').bind(key, JSON.stringify(results), Date.now()).run();
+    await this.db.prepare(`INSERT INTO search_cache (key, results, at) VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET results = excluded.results, at = excluded.at`).bind(key, JSON.stringify(results), Date.now()).run();
     return results;
   }
 
-  async search(q, source) {
+  async search(q, source, uid = null) {
     if (source === 'au') {
       return this.cached(`au:${q.toLowerCase()}`, 6 * 3600_000, async () => {
         const j = await fetchJson(`${AUDIUS}/tracks/search?query=${encodeURIComponent(q)}&limit=15&app_name=${APP_NAME}`);
@@ -328,25 +362,122 @@ export class Hub extends DurableObject {
     return this.cached(`yt:${q.toLowerCase()}`, YT_SEARCH_TTL, async () => {
       // Only fresh searches cost quota; cached ones above keep working while we're limited.
       if (Date.now() < (this.ytLimitedUntil || 0)) throw Object.assign(new Error('quotaExceeded'), { quota: true });
-      const r = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoCategoryId=10&videoEmbeddable=true&maxResults=10&q=${encodeURIComponent(q)}&key=${this.env.YT_API_KEY}`, { signal: AbortSignal.timeout(8000) });
-      const j = await r.json().catch(() => null);
-      if (!j?.items) {
-        const reason = j?.error?.errors?.[0]?.reason || j?.error?.status || `HTTP ${r.status}`;
-        console.error(`YouTube search failed: ${reason} — ${j?.error?.message || ''}`);
-        if (/quota|dailyLimit|rateLimit/i.test(reason)) {
-          this.ytLimitedUntil = nextPacificMidnight();
-          throw Object.assign(new Error(reason), { quota: true });
-        }
-        throw new Error(reason);
+      // Each person gets a share of the day's quota, so one person can't use it all up.
+      if (uid) {
+        const row = await this.db.prepare(`INSERT INTO yt_usage (user_id, day, n) VALUES (?, ?, 1)
+          ON CONFLICT(user_id, day) DO UPDATE SET n = n + 1 RETURNING n`).bind(uid, pacificDay()).first();
+        if (row.n > YT_PER_PERSON) throw Object.assign(new Error('personalLimit'), { personal: true });
       }
-      const list = j.items.map((i) => ({
-        id: `yt:${i.id.videoId}`, source: 'yt', sourceId: i.id.videoId, title: decode(i.snippet.title),
-        author: cleanAuthor(decode(i.snippet.channelTitle)), art: ytArt(i.id.videoId),
-        // "- Topic" channels are YouTube Music's official audio uploads: the song, not a music video.
-        official: / - Topic$/.test(i.snippet.channelTitle),
-      }));
-      return [...list.filter((t) => t.official), ...list.filter((t) => !t.official)];
+      return this.ytFetch(q);
     });
+  }
+
+  // One YouTube search (100 quota units).
+  async ytFetch(q) {
+    const r = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoCategoryId=10&videoEmbeddable=true&maxResults=10&q=${encodeURIComponent(q)}&key=${this.env.YT_API_KEY}`, { signal: AbortSignal.timeout(8000) });
+    const j = await r.json().catch(() => null);
+    if (!j?.items) {
+      const reason = j?.error?.errors?.[0]?.reason || j?.error?.status || `HTTP ${r.status}`;
+      console.error(`YouTube search failed: ${reason} — ${j?.error?.message || ''}`);
+      if (/quota|dailyLimit|rateLimit/i.test(reason)) {
+        this.ytLimitedUntil = nextPacificMidnight();
+        throw Object.assign(new Error(reason), { quota: true });
+      }
+      throw new Error(reason);
+    }
+    const list = j.items.map((i) => ({
+      id: `yt:${i.id.videoId}`, source: 'yt', sourceId: i.id.videoId, title: decode(i.snippet.title),
+      author: cleanAuthor(decode(i.snippet.channelTitle)), art: ytArt(i.id.videoId),
+      // "- Topic" channels are YouTube Music's official audio uploads: the song, not a music video.
+      official: / - Topic$/.test(i.snippet.channelTitle),
+    }));
+    return [...list.filter((t) => t.official), ...list.filter((t) => !t.official)];
+  }
+
+  // Past YouTube searches that start with what someone is typing: free, since they're cached.
+  async suggest(q) {
+    const clean = q.replace(/[%_\\]/g, '');
+    if (clean.length < 2) return [];
+    const { results } = await this.db.prepare(`SELECT key FROM search_cache WHERE key LIKE ? AND at > ? ORDER BY hits DESC, at DESC LIMIT 6`)
+      .bind(`yt:${clean}%`, Date.now() - YT_SEARCH_TTL).all();
+    return results.map((r) => r.key.slice(3)).filter((s) => s !== clean);
+  }
+
+  // Overnight, just before YouTube's quota resets: refresh popular searches that are about to
+  // go stale, using quota that would otherwise go unused.
+  async prewarm() {
+    if (!this.env.YT_API_KEY || Date.now() < (this.ytLimitedUntil || 0)) return { refreshed: 0 };
+    const { results } = await this.db.prepare(`SELECT key FROM search_cache WHERE key LIKE 'yt:%' AND hits >= 2 AND at < ? ORDER BY hits DESC LIMIT 20`)
+      .bind(Date.now() - 5 * 24 * 3600_000).all();
+    let refreshed = 0;
+    for (const { key } of results) {
+      try {
+        const list = await this.ytFetch(key.slice(3));
+        await this.db.prepare('UPDATE search_cache SET results = ?, at = ? WHERE key = ?').bind(JSON.stringify(list), Date.now(), key).run();
+        refreshed++;
+      } catch (e) { if (e.quota) break; }
+    }
+    return { refreshed };
+  }
+
+  // What someone seems to like: genres and search words from their playlists, likes and mood song.
+  async taste(uid) {
+    const { results } = await this.db.prepare(`SELECT id, title, author, genre FROM tracks WHERE id IN (
+        SELECT ps.track_id FROM playlist_songs ps JOIN playlists p ON p.id = ps.playlist_id WHERE p.owner = ?1
+        UNION SELECT track_id FROM likes WHERE user_id = ?1
+        UNION SELECT mood_track FROM users WHERE id = ?1) LIMIT 300`).bind(uid).all();
+    const genres = {}, words = {}, labels = {};
+    for (const t of results) {
+      if (t.genre) genres[t.genre] = (genres[t.genre] || 0) + 3;
+      const text = `${t.title} ${t.author}`;
+      for (const [re, hint] of STYLE_HINTS) {
+        if (!re.test(text)) continue;
+        if (hint.genre) { genres[hint.genre] = (genres[hint.genre] || 0) + 2; labels[hint.genre] ||= hint.label; }
+        if (hint.q) { words[hint.q] = (words[hint.q] || 0) + 2; labels[hint.q] = hint.label; }
+        break; // one style per song
+      }
+    }
+    return { known: new Set(results.map((t) => t.id)), genres: top(genres, 2), words: top(words, 2), labels };
+  }
+
+  // Songs this person might like, best first. Recomputed every 6 hours; free (Audius).
+  async candidates(uid) {
+    return this.cached(`cand:${uid}`, 6 * 3600_000, async () => {
+      const { known, genres, words, labels } = await this.taste(uid);
+      const fetchList = (url, because) => fetchJson(url).catch(() => null)
+        .then((j) => (j?.data || []).map(audiusTrack).filter((t) => t?.playable && t.duration > 60 && t.duration < 600 && !known.has(t.id)).map((t) => ({ ...publicTrack(t), because })));
+      const lists = await Promise.all([
+        ...genres.map((g) => fetchList(`${AUDIUS}/tracks/trending?genre=${encodeURIComponent(g)}&time=week&limit=30&app_name=${APP_NAME}`, `Because you play ${labels[g] || g}`)),
+        ...words.map((w) => fetchList(`${AUDIUS}/tracks/search?query=${encodeURIComponent(w)}&limit=20&app_name=${APP_NAME}`, `More ${labels[w] || w}`)),
+        fetchList(`${AUDIUS}/tracks/trending?time=week&limit=30&app_name=${APP_NAME}`, 'Trending with independent artists'),
+      ]);
+      // Interleave the lists so the row mixes styles, with personal picks first and trending last.
+      const out = [], seen = new Set();
+      for (let i = 0; i < 30; i++) for (const l of lists) { const t = l[i]; if (t && !seen.has(t.id)) { seen.add(t.id); out.push(t); } }
+      return out.slice(0, 80);
+    });
+  }
+
+  // This person's Fresh finds: keeps songs they play, swaps out ones left unplayed for 2 days.
+  async discoverFor(uid) {
+    const now = Date.now();
+    await this.db.prepare(`UPDATE fresh_pool SET dropped_at = ?1 WHERE user_id = ?2 AND dropped_at IS NULL
+      AND max(added_at, coalesce(last_played, 0)) < ?3`).bind(now, uid, now - FRESH_IDLE).run();
+    const { results: pool } = await this.db.prepare('SELECT track_id, track, dropped_at FROM fresh_pool WHERE user_id = ? AND (dropped_at IS NULL OR dropped_at > ?)')
+      .bind(uid, now - FRESH_REST).all();
+    const active = pool.filter((r) => !r.dropped_at).map((r) => JSON.parse(r.track));
+    const need = FRESH_SIZE - active.length;
+    const fresh = [];
+    if (need > 0) {
+      const skip = new Set(pool.map((r) => r.track_id));
+      for (const t of await this.candidates(uid)) { if (fresh.length >= need) break; if (!skip.has(t.id)) fresh.push(t); }
+      if (fresh.length) {
+        await this.db.batch(fresh.map((t, i) => this.db.prepare(`INSERT INTO fresh_pool (user_id, track_id, track, added_at) VALUES (?, ?, ?, ?)
+          ON CONFLICT(user_id, track_id) DO UPDATE SET track = excluded.track, added_at = excluded.added_at, last_played = NULL, dropped_at = NULL`)
+          .bind(uid, t.id, JSON.stringify(t), now - i)));
+      }
+    }
+    return [...fresh, ...active];
   }
 
   // Fresh songs that play with the screen off, for the Discover row on Home. Refreshed hourly.
@@ -425,6 +556,8 @@ export class Hub extends DurableObject {
   async fetch(req) {
     const url = new URL(req.url);
     if (url.pathname === '/ws') return this.connect(req, url);
+    // Only the Worker's nightly job reaches this: public requests never route /internal here.
+    if (url.pathname === '/internal/prewarm') return json(await this.prewarm());
     try { return await this.api(req, url); }
     catch (e) { console.error(e?.stack || e); return fail(500, 'Something went wrong. Try again.'); }
   }
@@ -586,16 +719,23 @@ export class Hub extends DurableObject {
       const source = ['au', 'jm'].includes(url.searchParams.get('source')) ? url.searchParams.get('source') : 'yt';
       if ((source === 'yt' && !this.env.YT_API_KEY) || (source === 'jm' && !this.env.JAMENDO_CLIENT_ID)) return json({ enabled: false, results: [] });
       if (!q) return json({ enabled: true, results: [] });
-      try { return json({ enabled: true, results: await this.search(q, source) }); }
+      try { return json({ enabled: true, results: await this.search(q, source, me.id) }); }
       catch (e) {
-        if (source === 'yt' && e.quota) {
-          // Out of YouTube quota for today: offer independent artists for the same words instead.
+        if (source === 'yt' && (e.quota || e.personal)) {
+          // Out of YouTube searches (everyone's for today, or this person's share): offer independent
+          // artists for the same words instead.
           const results = await this.search(q, 'au').catch(() => []);
-          return json({ enabled: true, limited: true, resetsAt: this.ytLimitedUntil || nextPacificMidnight(), results });
+          return json({ enabled: true, limited: e.quota ? 'all' : 'you', perPerson: YT_PER_PERSON, resetsAt: this.ytLimitedUntil || nextPacificMidnight(), results });
         }
         // Include Google's short reason code (e.g. "keyInvalid") so problems can be diagnosed from the app.
         return json({ error: 'Song search is unavailable right now. Paste a link instead.', reason: String(e.message || '').slice(0, 80) }, 502);
       }
+    }
+
+    if (m === 'GET' && path === '/api/search/suggest') {
+      const q = String(url.searchParams.get('q') || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 100);
+      const used = await this.db.prepare('SELECT n FROM yt_usage WHERE user_id = ? AND day = ?').bind(me.id, pacificDay()).first();
+      return json({ suggestions: await this.suggest(q), left: Math.max(0, YT_PER_PERSON - (used?.n || 0)) });
     }
 
     // ----- parties -----
@@ -618,8 +758,13 @@ export class Hub extends DurableObject {
     }
 
     if (m === 'GET' && path === '/api/discover') {
-      try { return json({ tracks: await this.discover() }); }
-      catch { return json({ tracks: [] }); }
+      try { return json({ tracks: await this.discoverFor(me.id) }); }
+      catch (e) { console.error('discoverFor', e); return json({ tracks: await this.discover().catch(() => []) }); }
+    }
+    // A song from Fresh finds was really listened to: keep it in the row.
+    if (m === 'POST' && path === '/api/played') {
+      await this.db.prepare('UPDATE fresh_pool SET last_played = ? WHERE user_id = ? AND track_id = ?').bind(Date.now(), me.id, String(body.trackId || '')).run();
+      return json({ ok: true });
     }
 
     p = path.match(/^\/api\/playlists\/([0-9a-f]{10})\/songs$/);
@@ -700,6 +845,8 @@ export class Hub extends DurableObject {
       move('UPDATE inbox SET user_id = ? WHERE user_id = ?'),
       move('UPDATE inbox SET actor = ? WHERE actor = ?'),
       move('UPDATE push_subs SET user_id = ? WHERE user_id = ?'),
+      move('UPDATE fresh_pool SET user_id = ? WHERE user_id = ?'),
+      move('UPDATE yt_usage SET user_id = ? WHERE user_id = ?'),
       this.db.prepare('DELETE FROM users WHERE id = ?').bind(old),
     ]);
     // Live sync state still uses the old ID, so drop it and let the sockets reconnect.
@@ -747,6 +894,9 @@ export class Hub extends DurableObject {
       del('DELETE FROM inbox WHERE user_id = ?'),
       del('DELETE FROM credit_ledger WHERE user_id = ?'),
       del('DELETE FROM push_subs WHERE user_id = ?'),
+      del('DELETE FROM fresh_pool WHERE user_id = ?'),
+      del('DELETE FROM yt_usage WHERE user_id = ?'),
+      this.db.prepare('DELETE FROM search_cache WHERE key = ?').bind(`cand:${id}`),
       del('DELETE FROM sessions WHERE user_id = ?'),
       del('DELETE FROM playlists WHERE owner = ?'),
       del('DELETE FROM users WHERE id = ?'),
@@ -1000,8 +1150,8 @@ export class Hub extends DurableObject {
 
   // ---------- party chat ----------
   // A message from a member, or a system note when `from` is null. Kept in the room, sent to everyone in it.
-  roomSay(r, text, from = null) {
-    const msg = { id: randomHex(4), from, name: from ? r.names[from] || from : null, text, at: Date.now() };
+  roomSay(r, text, from = null, reply = null) {
+    const msg = { id: randomHex(4), from, name: from ? r.names[from] || from : null, text, at: Date.now(), ...(reply ? { reply } : {}) };
     (r.chat ||= []).push(msg);
     if (r.chat.length > CHAT_KEEP) r.chat.splice(0, r.chat.length - CHAT_KEEP);
     for (const id of r.members) this.sendTo(id, { type: 'chat', msg });
@@ -1110,7 +1260,21 @@ export class Hub extends DurableObject {
       const text = String(m.text || '').replace(/\s+/g, ' ').trim().slice(0, CHAT_LEN);
       if (!text) return;
       if (this.flooding(uid, 'chat', 5, 10_000)) return err('Slow down a little. Try again in a few seconds.');
-      this.roomSay(room, text, uid);
+      // A reply carries a short quote of the message it answers, so it still makes sense if that one scrolls away.
+      const orig = m.replyTo ? (room.chat || []).find((c) => c.id === m.replyTo && c.from) : null;
+      const reply = orig ? { id: orig.id, from: orig.from, name: orig.name, text: orig.text.slice(0, 90) } : null;
+      this.roomSay(room, text, uid, reply);
+      return this.persist();
+    }
+    // React to one message with an icon; tapping the same one again takes it back.
+    if (m.type === 'chat-react') {
+      const msg = (room.chat || []).find((c) => c.id === m.id && c.from);
+      if (!msg || !REACTIONS.has(m.kind) || this.flooding(uid, 'chat-react', 10, 10_000)) return;
+      const who = ((msg.reactions ||= {})[m.kind] ||= []);
+      const i = who.indexOf(uid);
+      if (i >= 0) who.splice(i, 1); else who.push(uid);
+      if (!who.length) delete msg.reactions[m.kind];
+      for (const id of room.members) this.sendTo(id, { type: 'chat-update', msg });
       return this.persist();
     }
     if (m.type === 'react') {
@@ -1178,7 +1342,8 @@ export class Hub extends DurableObject {
     if (m.type === 'load') {
       // The queue always comes from a stored playlist or the Discover row, never from the client.
       const pl = m.discover ? null : await this.playlist(String(m.playlistId || ''));
-      const queue = m.discover ? await this.discover() : (pl?.songs || []).map(songToTrack);
+      // Fresh finds are personal, so a party plays the Fresh finds of whoever pressed play.
+      const queue = m.discover ? await this.discoverFor(uid).catch(() => this.discover()) : (pl?.songs || []).map(songToTrack);
       const index = Math.max(0, Math.min(queue.length - 1, m.index | 0));
       if (!queue[index]) return;
       // A start time in the future gives every phone a moment to load before the clock starts.

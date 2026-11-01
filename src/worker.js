@@ -25,6 +25,11 @@ export default {
     }
     return out;
   },
+
+  // Nightly, just before YouTube's quota resets: refresh popular searches with unused quota.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(env.HUB.get(env.HUB.idFromName('hub')).fetch('https://internal/internal/prewarm'));
+  },
 };
 
 // Pages may only run scripts from Aux itself, Google sign-in and YouTube's player. This makes it far

@@ -11,8 +11,10 @@
     "not_found_handling": "single-page-application",
     // The pages go through the Worker so plain-http visits get redirected to https (Google sign-in
     // only trusts https). Scripts, styles and icons skip it and are served straight from the edge.
-    "run_worker_first": ["/", "/index.html", "/privacy", "/privacy.html", "/terms", "/terms.html", "/security", "/security.html", "/api/*", "/ws", "/media/*", "/.well-known/*"]
+    "run_worker_first": ["/", "/index.html", "/privacy", "/privacy.html", "/terms", "/terms.html", "/security", "/security.html", "/share", "/api/*", "/ws", "/media/*", "/.well-known/*"]
   },
+  // 06:30 UTC daily, just before YouTube's quota resets (07:00 or 08:00 UTC, by US daylight saving).
+  "triggers": { "crons": ["30 6 * * *"] },
   // Lets open apps notice a new deploy and refresh themselves.
   "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "durable_objects": { "bindings": [{ "name": "HUB", "class_name": "Hub" }] },
