@@ -9,6 +9,11 @@ const { WebSocketServer } = require('ws');
 const PORT = process.env.PORT || 3000;
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data.json');
 const YT_API_KEY = process.env.YT_API_KEY || '';
+// When set, Google is the only way to sign up. Unset (local dev), the plain ID signup still works.
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+// For the Android app (TWA): package name and the signing cert's SHA-256 fingerprint(s), comma-separated.
+const ANDROID_PACKAGE = process.env.ANDROID_PACKAGE || '';
+const ANDROID_SHA256 = (process.env.ANDROID_SHA256 || '').split(',').map((s) => s.trim()).filter(Boolean);
 const START_CREDITS = 5;
 const MAX_SONGS = 10;
 
@@ -103,13 +108,62 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+app.get('/.well-known/assetlinks.json', (req, res) => {
+  res.json(ANDROID_PACKAGE && ANDROID_SHA256.length ? [{
+    relation: ['delegate_permission/common.handle_all_urls'],
+    target: { namespace: 'android_app', package_name: ANDROID_PACKAGE, sha256_cert_fingerprints: ANDROID_SHA256 },
+  }] : []);
+});
+
+app.get('/api/config', (req, res) => res.json({ googleClientId: GOOGLE_CLIENT_ID || null }));
+
+// Shared by both signup paths: returns an error string, or null if the handle and name are usable.
+function checkNewUser(handle, name) {
+  if (!/^[a-z0-9_]{3,20}$/.test(handle)) return 'Use 3 to 20 letters, numbers or underscores.';
+  if (!name) return 'Add a display name.';
+  if (db.users[handle]) return `@${handle} is taken. Try another.`;
+  return null;
+}
+const cleanHandle = (h) => String(h || '').toLowerCase().trim().replace(/^@/, '');
+const cleanName = (n) => String(n || '').trim().slice(0, 30);
+
 app.post('/api/signup', (req, res) => {
-  const handle = String(req.body.handle || '').toLowerCase().trim().replace(/^@/, '');
-  const name = String(req.body.name || '').trim().slice(0, 30);
-  if (!/^[a-z0-9_]{3,20}$/.test(handle)) return res.status(400).json({ error: 'Use 3 to 20 letters, numbers or underscores.' });
-  if (!name) return res.status(400).json({ error: 'Add a display name.' });
-  if (db.users[handle]) return res.status(409).json({ error: `@${handle} is taken. Try another.` });
+  if (GOOGLE_CLIENT_ID) return res.status(403).json({ error: 'Sign in with Google.' });
+  const handle = cleanHandle(req.body.handle);
+  const name = cleanName(req.body.name);
+  const bad = checkNewUser(handle, name);
+  if (bad) return res.status(bad.includes('taken') ? 409 : 400).json({ error: bad });
   const user = { id: handle, name, credits: START_CREDITS, token: crypto.randomUUID(), createdAt: Date.now() };
+  db.users[handle] = user; save();
+  res.json({ token: user.token, user: meUser(user) });
+});
+
+// Checks a Google ID token (from the Sign in with Google button) with Google and returns its claims.
+async function verifyGoogle(credential) {
+  try {
+    const r = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
+    if (!r.ok) return null;
+    const c = await r.json();
+    const issOk = c.iss === 'accounts.google.com' || c.iss === 'https://accounts.google.com';
+    if (c.aud !== GOOGLE_CLIENT_ID || !issOk || Number(c.exp) * 1000 < Date.now() || !c.sub) return null;
+    return c;
+  } catch { return null; }
+}
+
+// Step 1: send {credential}. A returning Google account signs straight in.
+// A new one gets {needsHandle, name}, and the client sends {credential, handle, name} to finish.
+app.post('/api/auth/google', async (req, res) => {
+  if (!GOOGLE_CLIENT_ID) return res.status(400).json({ error: 'Google sign-in is not set up on this server.' });
+  const c = await verifyGoogle(String(req.body.credential || ''));
+  if (!c) return res.status(401).json({ error: 'Google sign-in failed. Try again.' });
+  const existing = Object.values(db.users).find((u) => u.googleSub === c.sub);
+  if (existing) return res.json({ token: existing.token, user: meUser(existing) });
+  if (!req.body.handle) return res.json({ needsHandle: true, name: cleanName(c.given_name || c.name) });
+  const handle = cleanHandle(req.body.handle);
+  const name = cleanName(req.body.name);
+  const bad = checkNewUser(handle, name);
+  if (bad) return res.status(bad.includes('taken') ? 409 : 400).json({ error: bad });
+  const user = { id: handle, name, credits: START_CREDITS, token: crypto.randomUUID(), googleSub: c.sub, email: c.email, createdAt: Date.now() };
   db.users[handle] = user; save();
   res.json({ token: user.token, user: meUser(user) });
 });

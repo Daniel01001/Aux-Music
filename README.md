@@ -18,7 +18,10 @@ To test on two phones, the app needs a public HTTPS address. Deploying it is the
    - Runtime: Node
    - Build command: `npm install`
    - Start command: `npm start`
-3. Optional: add the environment variable `YT_API_KEY` (a YouTube Data API v3 key) to turn on song search. Without it, you add songs by pasting a YouTube or YouTube Music link.
+3. Optional environment variables:
+   - `YT_API_KEY`: a YouTube Data API v3 key. Turns on song search. Without it, you add songs by pasting a YouTube or YouTube Music link.
+   - `GOOGLE_CLIENT_ID`: an OAuth web client ID. Turns on Sign in with Google and turns off the plain ID signup.
+   - `ANDROID_PACKAGE` and `ANDROID_SHA256`: the Android app's package name and signing-key SHA-256 fingerprint (comma-separated if more than one). They're served at `/.well-known/assetlinks.json` so the installed app opens full screen, without a browser bar.
 4. Open the `onrender.com` URL on both phones, sign up with a different ID on each, then go to Sync and invite the other phone's ID.
 
 ## How sync works

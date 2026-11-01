@@ -79,10 +79,18 @@
   window.addEventListener('hashchange', () => { collapsePlayer(); route(); });
 
   // ---------- onboarding ----------
-  function renderOnboard() {
+  let config = null;
+  const loadScript = (src) => new Promise((ok, fail) => { const s = document.createElement('script'); s.src = src; s.async = true; s.onload = ok; s.onerror = fail; document.head.append(s); });
+  function signedIn(j) { token = j.token; store.set('aux-token', token); me = j.user; boot(); }
+
+  async function renderOnboard() {
     document.body.classList.add('no-tabs');
-    view.innerHTML = `
-      <div class="onboard">
+    if (!config) config = await fetch('/api/config').then((r) => r.json()).catch(() => ({}));
+    if (config.googleClientId) return renderGoogleOnboard();
+    renderIdOnboard();
+  }
+
+  const onboardIntro = `
         <div class="wordmark" style="font-size:34px">aux<span class="dot"></span></div>
         <div>
           <h1>Hand someone the aux.</h1>
@@ -92,13 +100,62 @@
           <li><span><b>Make a playlist</b> of 5 to 10 songs from YouTube Music.</span></li>
           <li><span><b>Add songs to other people's playlists.</b> It costs 1 credit. Listen to songs others added to earn credits back.</span></li>
           <li><span><b>Sync</b> with a friend by their ID and hear the same song at the same moment.</span></li>
-        </ol>
+        </ol>`;
+
+  async function renderGoogleOnboard() {
+    view.innerHTML = `
+      <div class="onboard">${onboardIntro}
+        <div class="sync-card" id="gCard">
+          <div id="gBtn" class="g-btn"></div>
+          <div class="error" id="err"></div>
+          <p class="muted small" style="margin:0">Use the Google account you listen to YouTube Music with.</p>
+        </div>
+      </div>`;
+    try {
+      if (!window.google?.accounts?.id) await loadScript('https://accounts.google.com/gsi/client');
+      google.accounts.id.initialize({ client_id: config.googleClientId, callback: (r) => googleStep(r.credential) });
+      const light = document.documentElement.dataset.theme === 'paper';
+      google.accounts.id.renderButton($('#gBtn'), { theme: light ? 'outline' : 'filled_black', shape: 'pill', size: 'large', text: 'continue_with', width: Math.min(360, $('#gBtn').clientWidth || 320) });
+    } catch { $('#err').textContent = "Couldn't load Google sign-in. Check your connection and reload."; }
+  }
+
+  async function googleStep(credential, extra) {
+    const err = $('#err'); if (err) err.textContent = '';
+    try {
+      const r = await fetch('/api/auth/google', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credential, ...extra }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error);
+      if (j.needsHandle) return renderPickHandle(credential, j.name);
+      signedIn(j);
+    } catch (e) { const el = $('#err'); if (el) el.textContent = e.message; const b = $('#pick button'); if (b) b.disabled = false; }
+  }
+
+  // First Google sign-in: choose the @ID people will find you by.
+  function renderPickHandle(credential, suggested) {
+    $('#gCard').outerHTML = `
+      <form id="pick" class="sync-card" novalidate>
+        <div class="field"><label for="name">Your name</label><input class="input" id="name" autocomplete="nickname" maxlength="30" value="${esc(suggested)}"></div>
+        <div class="field"><label for="handle">Pick your ID</label><div class="input-wrap"><span class="prefix">@</span><input class="input" id="handle" autocapitalize="none" autocomplete="off" spellcheck="false" maxlength="20" placeholder="${esc(String(suggested || 'daniel').toLowerCase().replace(/[^a-z0-9_]/g, '') || 'daniel')}"></div></div>
+        <div class="error" id="err"></div>
+        <button class="btn primary block" type="submit">Finish</button>
+        <p class="muted small" style="margin:0">Friends use your ID to add songs to your playlists and to sync with you.</p>
+      </form>`;
+    $('#handle').focus();
+    $('#pick').onsubmit = (e) => {
+      e.preventDefault(); e.target.querySelector('button').disabled = true;
+      googleStep(credential, { handle: $('#handle').value, name: $('#name').value });
+    };
+  }
+
+  function renderIdOnboard() {
+    view.innerHTML = `
+      <div class="onboard">${onboardIntro}
         <form id="signup" class="sync-card" novalidate>
           <div class="field"><label for="name">Your name</label><input class="input" id="name" autocomplete="nickname" maxlength="30" placeholder="Daniel"></div>
           <div class="field"><label for="handle">Pick your ID</label><div class="input-wrap"><span class="prefix">@</span><input class="input" id="handle" autocapitalize="none" autocomplete="off" spellcheck="false" maxlength="20" placeholder="daniel"></div></div>
           <div class="error" id="err"></div>
           <button class="btn primary block" type="submit">Get started</button>
-          <p class="muted small" style="margin:0">Google sign-in comes later. For this test build, your ID is saved on this device.</p>
+          <p class="muted small" style="margin:0">Test build without Google sign-in. Your ID is saved on this device.</p>
         </form>
       </div>`;
     $('#signup').onsubmit = async (e) => {
@@ -108,8 +165,7 @@
         const r = await fetch('/api/signup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: $('#name').value, handle: $('#handle').value }) });
         const j = await r.json();
         if (!r.ok) throw new Error(j.error);
-        token = j.token; store.set('aux-token', token); me = j.user;
-        boot();
+        signedIn(j);
       } catch (err) { $('#err').textContent = err.message; btn.disabled = false; }
     };
   }
@@ -549,4 +605,6 @@
     if (!location.hash) location.hash = 'home'; else route();
   }
   boot();
+
+  if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 })();

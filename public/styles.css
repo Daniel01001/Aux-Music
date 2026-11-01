@@ -141,7 +141,8 @@ h2 { font-size: 20px; }
 .how b { color: var(--text); font-weight: 600; }
 
 /* Sync page */
-.sync-card { background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+.g-btn { min-height: 44px; display: flex; justify-content: center; }
+.sync-card {background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 .live-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--good); text-transform: uppercase; letter-spacing: .06em; }
 .live-pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; animation: pulse 1.6s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .35; } }
