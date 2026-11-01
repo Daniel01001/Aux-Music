@@ -58,7 +58,7 @@ Fill in from the Cloud console (APIs & Services → YouTube Data API v3 → Quot
 
 > - **Storage of API data:** search results and video metadata (video ID, title, channel name, thumbnail URL) are cached for at most 7 days and refreshed or deleted after that. Video IDs and titles are kept for songs that users have added to their playlists, so the playlists can be shown; this metadata is refreshed when a song is added again.
 > - **No downloading or re-hosting** of YouTube audio or video. Thumbnails are loaded directly from i.ytimg.com.
-> - **Player:** the official IFrame player is used and stays visible (at least 200×200 px in the full player); YouTube branding is not hidden or overlaid.
+> - **Player:** the official IFrame player is used and stays visible while playing, at least 200×200 px; when minimised, YouTube playback pauses and a cover image is shown. YouTube branding is not hidden or overlaid.
 > - **No background playback** of YouTube content.
 > - **Users' Google data:** sign-in uses Google Identity with basic scopes only (openid, profile). Aux stores a keyed hash of the Google account ID and the user's name; it does not store email addresses or Google access/refresh tokens.
 > - **Terms and privacy:** the Terms link to the YouTube Terms of Service; the Privacy Policy links to the Google Privacy Policy and states that Aux uses YouTube API Services.
@@ -73,6 +73,6 @@ Fill in from the Cloud console (APIs & Services → YouTube Data API v3 → Quot
 5. The Terms page showing the YouTube Terms of Service link, and the Privacy page showing the Google Privacy Policy link.
 6. Google Cloud console quota usage graph for the last 30 days.
 
-## Known gap to fix before submitting
+## Player size
 
-- In the **mini player**, the video tile is smaller than YouTube's 200×200 px minimum. Fix it before applying, for example by showing the cover art in the mini player and pausing the video while minimised, or by keeping a 200 px video tile.
+> The full player shows the YouTube video at the full screen width (well above 200×200 px). When the player is minimised, a YouTube song is paused and its cover image is shown instead of the video; it resumes when the player is opened again. YouTube content therefore only plays in a player of at least 200×200 px.

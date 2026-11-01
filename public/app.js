@@ -1227,9 +1227,28 @@
   document.addEventListener('visibilitychange', syncWakeLock);
 
   // The sync loop: keep the active output where the shared clock says it should be.
+  // YouTube's player must be at least 200x200 px while it plays, and the mini bar is smaller.
+  // So while minimised, a YouTube song shows its cover and the video waits (paused).
+  const ytHeldInMini = () => engine.state.track?.source === 'yt' && P.classList.contains('mini');
+  function holdForMini(st, o) {
+    const wrap = $('#videoWrap');
+    if (!wrap.classList.contains('cover')) { $('#artBig').src = st.track.art || ''; wrap.classList.add('cover'); }
+    $('#tapAudio').classList.add('hidden');
+    if (!o.ready()) return;
+    if (['playing', 'buffering'].includes(o.status())) o.pause();
+    // A host or DJ with the player minimised still moves the party on when the song ends.
+    if (room && canControl() && st.playing && engine.loaded === st.track.id) {
+      const d = o.duration(), key = `${st.track.id}|${st.index}`;
+      if (d && expected(st) >= d - 0.5 && engine.endReported !== key) { engine.endReported = key; act({ type: 'next', from: st.index }); }
+    }
+  }
+
   function tick() {
     const st = engine.state, o = out();
-    if (!st.track || !o?.ready()) return;
+    if (!st.track || !o) return;
+    if (ytHeldInMini()) return holdForMini(st, o);
+    $('#videoWrap').classList.remove('cover');
+    if (!o.ready()) return;
     const exp = expected(st);
     if (engine.loaded !== st.track.id) {
       for (const other of Object.values(outputs)) if (other !== o && other.ready()) other.stop();
@@ -1359,14 +1378,32 @@
   // ---------- player UI ----------
   const P = $('#player');
   P.classList.add('mini');
-  function expandPlayer() { P.classList.remove('mini'); P.classList.add('full'); document.body.style.overflow = 'hidden'; renderPlayerMeta(); }
-  function collapsePlayer() { P.classList.remove('full'); P.classList.add('mini'); document.body.style.overflow = ''; }
+  function expandPlayer() {
+    P.classList.remove('mini'); P.classList.add('full'); document.body.style.overflow = 'hidden';
+    // On your own, pick up where you minimised. In a sync, tick() jumps to where everyone is.
+    if (engine.miniPaused && !room && !engine.state.playing) act({ type: 'resume', position: engine.state.position });
+    engine.miniPaused = false;
+    renderPlayerMeta(); tick();
+  }
+  function collapsePlayer() {
+    const wasFull = P.classList.contains('full');
+    P.classList.remove('full'); P.classList.add('mini'); document.body.style.overflow = '';
+    // On your own, really pause a YouTube song so it doesn't run on unheard while minimised.
+    if (wasFull && !room && engine.state.track?.source === 'yt' && engine.state.playing) {
+      engine.miniPaused = true;
+      act({ type: 'pause', position: out()?.time() });
+    }
+    renderPlayerMeta(); tick();
+  }
   $('#playerMeta').onclick = (e) => { if (P.classList.contains('mini') && !e.target.closest('button')) expandPlayer(); };
   $('#collapseBtn').onclick = collapsePlayer;
   const toggle = () => { const st = engine.state; act(st.playing ? { type: 'pause', position: out()?.time() } : { type: 'resume', position: st.position }); };
   const prev = () => { if (expected(engine.state) > 4) act({ type: 'seek', position: 0 }); else act({ type: 'prev' }); };
-  $('#toggleBtn').onclick = toggle; $('#miniToggle').onclick = toggle;
-  $('#nextBtn').onclick = () => act({ type: 'next' }); $('#miniNext').onclick = () => act({ type: 'next' });
+  $('#toggleBtn').onclick = toggle;
+  // In the mini bar, a YouTube song can only be heard with the player open, so play opens it.
+  $('#miniToggle').onclick = () => (ytHeldInMini() ? expandPlayer() : toggle());
+  $('#nextBtn').onclick = () => act({ type: 'next' });
+  $('#miniNext').onclick = () => { act({ type: 'next' }); if (engine.miniPaused) engine.miniPaused = false; };
   $('#prevBtn').onclick = prev;
   $('#saveBtn').onclick = () => engine.state.track && saveSong(engine.state.track);
   let seeking = false;
@@ -1384,7 +1421,12 @@
 
   function updateButtons() {
     const playing = engine.state.playing;
-    for (const b of [$('#toggleBtn'), $('#miniToggle')]) { b.querySelector('use').setAttribute('href', playing ? '#i-pause' : '#i-play'); b.setAttribute('aria-label', playing ? 'Pause' : 'Play'); }
+    const held = ytHeldInMini(); // a minimised YouTube song isn't audible here, so offer Play (it opens the player)
+    for (const b of [$('#toggleBtn'), $('#miniToggle')]) {
+      const on = playing && !(held && b.id === 'miniToggle');
+      b.querySelector('use').setAttribute('href', on ? '#i-pause' : '#i-play');
+      b.setAttribute('aria-label', held && b.id === 'miniToggle' ? 'Open the player to listen' : on ? 'Pause' : 'Play');
+    }
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = engine.state.track ? (playing ? 'playing' : 'paused') : 'none';
     document.body.classList.toggle('is-playing', !!(playing && engine.state.track));
     syncWakeLock();
@@ -1404,7 +1446,8 @@
     if (t?.license) lic.href = t.license;
     $('#saveBtn').hidden = !t;
     $('#lyBtn').hidden = !t || !config?.lyrics;
-    $('#pmSub').textContent = room ? `In sync with ${room.members.filter((m) => m.id !== me?.id).map((m) => '@' + m.id).join(', ') || 'no one yet'}` : (t?.author || '');
+    $('#pmSub').textContent = ytHeldInMini() ? (room ? 'Tap to watch and listen with the party' : 'Paused · tap to watch and listen')
+      : room ? `In sync with ${room.members.filter((m) => m.id !== me?.id).map((m) => '@' + m.id).join(', ') || 'no one yet'}` : (t?.author || '');
     $('#sheetLabel').textContent = room ? 'Playing in sync' : 'Now playing';
     const control = canControl();
     P.classList.toggle('locked', !control);

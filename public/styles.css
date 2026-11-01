@@ -219,6 +219,11 @@ h2 { font-size: 20px; }
 .art-big { display: none; position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .video-wrap.audio .art-big { display: block; }
 .video-wrap.audio #yt { visibility: hidden; }
+/* Minimised YouTube song: the video is paused and its cover stands in (YouTube needs 200x200 px to play). */
+.video-wrap.cover .art-big { display: block; }
+.video-wrap.cover #yt { visibility: hidden; }
+.player.full .video-wrap.cover .art-big { display: none; }
+.player.full .video-wrap.cover #yt { visibility: visible; }
 .video-wrap.audio { cursor: pointer; }
 .player.full .video-wrap.audio { aspect-ratio: 1; max-width: 340px; margin: 0 auto; }
 
