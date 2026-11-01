@@ -3,7 +3,9 @@
   const $ = (s, el = document) => el.querySelector(s);
   const view = $('#view');
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const thumb = (id) => `https://i.ytimg.com/vi/${id}/mqdefault.jpg`;
+  // A song: { id: "yt:<videoId>" | "au:<audiusId>", source, sourceId, title, author, art }
+  const art = (s) => esc(s?.art || '');
+  const SOURCE_NAME = { yt: 'YouTube Music', au: 'Audius' };
   const hue = (s) => [...String(s)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
   const avatar = (u, size = '') => `<span class="avatar ${size} ${u?.online ? 'online' : ''}" style="--h:${hue(u?.id || '?')}">${esc((u?.name || u?.id || '?')[0])}</span>`;
   const fmt = (t) => { t = Math.max(0, Math.floor(t || 0)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
@@ -54,10 +56,10 @@
 
   // ---------- covers & cards ----------
   function cover(songs) {
-    const ids = [...new Set(songs.map((s) => s.videoId))].slice(0, 4);
-    if (!ids.length) return `<div class="cover"><div class="empty">+</div></div>`;
-    if (ids.length < 4) return `<div class="cover one"><img src="${thumb(ids[0])}" alt="" loading="lazy"></div>`;
-    return `<div class="cover">${ids.map((id) => `<img src="${thumb(id)}" alt="" loading="lazy">`).join('')}</div>`;
+    const arts = [...new Set(songs.map((s) => s.art).filter(Boolean))].slice(0, 4);
+    if (!arts.length) return `<div class="cover"><div class="empty">+</div></div>`;
+    if (arts.length < 4) return `<div class="cover one"><img src="${esc(arts[0])}" alt="" loading="lazy"></div>`;
+    return `<div class="cover">${arts.map((a) => `<img src="${esc(a)}" alt="" loading="lazy">`).join('')}</div>`;
   }
   const slots = (n) => `<div class="slots" title="${n} of 10 songs">${Array.from({ length: 10 }, (_, i) => `<i class="${i < n ? 'on' : ''}"></i>`).join('')}</div>`;
 
@@ -197,7 +199,7 @@
   const syncBanner = () => `
     <section class="section"><a href="#sync" class="sync-card" style="flex-direction:row;align-items:center">
       <div class="stack">${room.members.map((m) => avatar(m, 'sm')).join('')}</div>
-      <div style="flex:1;min-width:0"><div class="live-pill">In sync</div><div class="small muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${room.state.videoId ? esc(room.state.title) : 'Pick a song to start'}</div></div>
+      <div style="flex:1;min-width:0"><div class="live-pill">In sync</div><div class="small muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${room.state.track ? esc(room.state.track.title) : 'Pick a song to start'}</div></div>
     </a></section>`;
 
   function newPlaylist() {
@@ -237,19 +239,19 @@
       </div>
       <div class="section" style="padding:0;margin-top:14px">
         ${p.songs.length ? `<ol class="songs">${p.songs.map((s, i) => `
-          <li class="song ${engine.state.videoId === s.videoId ? 'now' : ''}" data-i="${i}">
-            <img class="thumb" src="${thumb(s.videoId)}" alt="" loading="lazy">
-            <div class="txt" data-play="${i}"><div class="st">${esc(s.title)}</div><div class="sa">${esc(s.author)}${s.addedBy ? ` · <span class="added-by">added by @${esc(s.addedBy)}</span>` : ''}</div></div>
-            ${mine ? `<button class="icon-btn" data-del="${esc(s.videoId)}" aria-label="Remove ${esc(s.title)}"><svg style="width:18px;height:18px;color:var(--muted)"><use href="#i-trash"/></svg></button>` : '<span></span>'}
+          <li class="song ${engine.state.track?.id === s.id ? 'now' : ''}" data-id="${esc(s.id)}">
+            <img class="thumb" src="${art(s)}" alt="" loading="lazy">
+            <div class="txt" data-play="${i}"><div class="st">${esc(s.title)}</div><div class="sa">${s.source === 'au' ? '<span class="tag">Audius</span> ' : ''}${esc(s.author)}${s.addedBy ? ` · <span class="added-by">added by @${esc(s.addedBy)}</span>` : ''}</div></div>
+            ${mine ? `<button class="icon-btn" data-del="${esc(s.id)}" aria-label="Remove ${esc(s.title)}"><svg style="width:18px;height:18px;color:var(--muted)"><use href="#i-trash"/></svg></button>` : '<span></span>'}
           </li>`).join('')}</ol>`
         : `<div class="empty-state"><h3>No songs yet</h3><p>${mine ? 'Add 5 to 10 songs so people know your taste.' : 'Be the first to add a song here.'}</p></div>`}
       </div>
       ${mine ? `<div class="section"><button class="link-btn" id="delPl" type="button" style="color:var(--muted)">Delete playlist</button></div>` : ''}`;
-    const queue = p.songs.map((s) => ({ videoId: s.videoId, title: s.title, author: s.author }));
+    const queue = p.songs.map(({ addedBy, addedAt, ...t }) => t);
     $('#playAll').onclick = () => playQueue(queue, 0, p.id);
     view.querySelectorAll('[data-play]').forEach((el) => el.onclick = () => playQueue(queue, +el.dataset.play, p.id));
     $('#addSong').onclick = () => addSongSheet(p);
-    view.querySelectorAll('[data-del]').forEach((b) => b.onclick = async () => { await api(`/api/playlists/${p.id}/songs/${b.dataset.del}`, { method: 'DELETE' }); route(); });
+    view.querySelectorAll('[data-del]').forEach((b) => b.onclick = async () => { await api(`/api/playlists/${p.id}/songs/${encodeURIComponent(b.dataset.del)}`, { method: 'DELETE' }); route(); });
     $('#delPl') && ($('#delPl').onclick = () => sheet(`
       <h2>Delete "${esc(p.name)}"?</h2><p class="muted" style="margin:0">Songs other people added will be gone too.</p>
       <div class="row-actions"><button class="btn" data-close style="flex:1">Keep it</button><button class="btn primary" id="yesDel" style="flex:1">Delete</button></div>`,
@@ -260,36 +262,56 @@
     const mine = p.owner === me.id;
     sheet(`
       <div class="sheet-top"><h2>Add to ${esc(p.name)}</h2><button class="icon-btn" data-close aria-label="Close"><svg><use href="#i-close"/></svg></button></div>
-      <div class="field"><label for="sq">Search a song or paste a YouTube Music link</label><input class="input" id="sq" placeholder="music.youtube.com/watch?v=…" autocapitalize="none" autocomplete="off"></div>
+      <div class="seg" role="tablist" aria-label="Where to search">
+        <button type="button" role="tab" data-src="yt" aria-selected="true">YouTube Music</button>
+        <button type="button" role="tab" data-src="au" aria-selected="false">Independent artists</button>
+      </div>
+      <div class="field"><label for="sq" id="sql">Search a song or paste a link</label><input class="input" id="sq" placeholder="Song or artist" autocapitalize="none" autocomplete="off"></div>
       <div id="sres"></div>
       <div class="error" id="serr"></div>
-      <p class="muted small" style="margin:0">${mine ? 'Adding to your own playlist is free.' : `Costs 1 credit. You have ${me.credits}.`}</p>`,
+      <p class="muted small" style="margin:0" id="snote"></p>`,
     (el, close) => {
-      const q = $('#sq', el), out = $('#sres', el), err = $('#serr', el);
+      const q = $('#sq', el), out = $('#sres', el), err = $('#serr', el), note = $('#snote', el);
+      let source = store.get('aux-src') === 'au' ? 'au' : 'yt';
+      const cost = mine ? 'Adding to your own playlist is free.' : `Costs 1 credit. You have ${me.credits}.`;
+      const setSource = (s) => {
+        source = s; store.set('aux-src', s);
+        el.querySelectorAll('[data-src]').forEach((b) => b.setAttribute('aria-selected', b.dataset.src === s));
+        note.textContent = s === 'au' ? `Songs from independent artists on Audius. They keep playing when your screen is off. ${cost}` : cost;
+        lookup();
+      };
+      el.querySelectorAll('[data-src]').forEach((b) => b.onclick = () => setSource(b.dataset.src));
       q.focus();
-      let t;
+      let t, seq = 0;
       q.oninput = () => { clearTimeout(t); t = setTimeout(lookup, 350); };
       async function lookup() {
         err.textContent = ''; const v = q.value.trim(); if (!v) return (out.innerHTML = '');
-        if (/youtu\.?be|^[\w-]{11}$/.test(v)) {
-          try { const s = await api(`/api/resolve?url=${encodeURIComponent(v)}`); show([s]); } catch (e) { out.innerHTML = ''; err.textContent = e.message; }
-        } else {
-          const r = await api(`/api/search?q=${encodeURIComponent(v)}`);
-          if (!r.enabled) { out.innerHTML = ''; err.textContent = 'Song search needs a YouTube API key on the server. Paste a link for now: open the song in YouTube Music, tap Share, then Copy link.'; return; }
-          show(r.results);
-        }
+        const mySeq = ++seq;
+        try {
+          if (/^https?:\/\/|youtu\.?be|audius\.co|^[\w-]{11}$/.test(v)) {
+            const s = await api(`/api/resolve?url=${encodeURIComponent(v)}`);
+            if (mySeq === seq) show([s]);
+          } else {
+            const r = await api(`/api/search?source=${source}&q=${encodeURIComponent(v)}`);
+            if (mySeq !== seq) return;
+            if (!r.enabled) { out.innerHTML = ''; err.textContent = 'YouTube search is not switched on yet. Paste a link: open the song in YouTube Music, tap Share, then Copy link.'; return; }
+            if (!r.results.length) { out.innerHTML = ''; err.textContent = `Nothing found on ${SOURCE_NAME[source]}.`; return; }
+            show(r.results);
+          }
+        } catch (e) { if (mySeq === seq) { out.innerHTML = ''; err.textContent = e.message; } }
       }
       function show(list) {
-        out.innerHTML = `<ul class="results">${list.map((s, i) => `<li><img src="${thumb(s.videoId)}" alt=""><div style="min-width:0"><div class="pm-title">${esc(s.title)}</div><div class="pm-sub">${esc(s.author)}</div></div><button class="btn primary" data-add="${i}" type="button" style="height:36px;padding:0 14px">Add</button></li>`).join('')}</ul>`;
+        out.innerHTML = `<ul class="results">${list.map((s, i) => `<li><img src="${art(s)}" alt=""><div style="min-width:0"><div class="pm-title">${esc(s.title)}</div><div class="pm-sub">${s.official ? '<span class="tag">Song</span> ' : ''}${s.source === 'au' ? '<span class="tag">Audius</span> ' : ''}${esc(s.author)}</div></div><button class="btn primary" data-add="${i}" type="button" style="height:36px;padding:0 14px">Add</button></li>`).join('')}</ul>`;
         out.querySelectorAll('[data-add]').forEach((b) => b.onclick = async () => {
           b.disabled = true;
           try {
             const s = list[+b.dataset.add];
-            const r = await api(`/api/playlists/${p.id}/songs`, { method: 'POST', body: s });
+            const r = await api(`/api/playlists/${p.id}/songs`, { method: 'POST', body: { source: s.source, sourceId: s.sourceId } });
             setCredits(r.credits); close(); toast(mine ? 'Added.' : `Added to @${p.owner}'s playlist. 1 credit spent.`); route();
           } catch (e) { err.textContent = e.message; b.disabled = false; }
         });
       }
+      setSource(source);
     });
   }
 
@@ -351,7 +373,7 @@
       <section class="section" style="margin-top:8px">
         <div class="sync-card">
           <div style="display:flex;justify-content:space-between;align-items:center"><span class="live-pill">In sync · ${room.members.length}</span><button class="link-btn" id="leave" type="button" style="color:var(--bad)">Leave</button></div>
-          ${st.videoId ? `<div class="preview" style="background:none;padding:0"><img src="${thumb(st.videoId)}" alt=""><div style="min-width:0"><div class="pm-title">${esc(st.title)}</div><div class="pm-sub">${esc(st.author)} · ${st.playing ? 'playing' : 'paused'}</div></div></div>` : `<p class="muted" style="margin:0">Nothing playing yet. Open any playlist and tap <b>Play for the sync</b>.</p>`}
+          ${st.track ? `<div class="preview" style="background:none;padding:0"><img src="${art(st.track)}" alt=""><div style="min-width:0"><div class="pm-title">${esc(st.track.title)}</div><div class="pm-sub">${esc(st.track.author)} · ${st.playing ? 'playing' : 'paused'}</div></div></div>` : `<p class="muted" style="margin:0">Nothing playing yet. Open any playlist and tap <b>Play for the sync</b>.</p>`}
           <ul class="people">
             ${room.members.map((m) => `<li class="person">${avatar(m)}<div class="who"><div class="n">${m.id === me.id ? 'You' : esc(m.name)}</div><div class="h">@${esc(m.id)}${m.id === room.host ? ' · started the sync' : ''}</div></div></li>`).join('')}
             ${room.pending.map((id) => `<li class="person pending">${avatar({ id, name: id })}<div class="who"><div class="n">@${esc(id)}</div><div class="h">Waiting for them to accept</div></div></li>`).join('')}
@@ -391,36 +413,68 @@
 
   // =====================================================================
   // Playback engine. One state shape for solo and synced play:
-  // { queue, index, videoId, title, author, playing, position, ref, playlistId }
+  // { queue, index, track, playing, position, ref, playlistId }
   // Expected time = position + (now - ref)/1000 while playing. In a sync,
   // the server owns the state and "now" is the server clock.
+  // YouTube songs play in the iframe; Audius songs play in an <audio> element,
+  // which keeps going with the screen off.
   // =====================================================================
-  const engine = { state: { queue: [], index: 0, videoId: null, playing: false, position: 0, ref: 0 }, loaded: null, lastSeek: 0, listened: 0, creditedFor: null, holding: false, bufferSince: 0 };
+  const engine = { state: { queue: [], index: 0, track: null, playing: false, position: 0, ref: 0 }, loaded: null, lastSeek: 0, lastTick: 0, listened: 0, creditedFor: null, holding: false, bufferSince: 0 };
   let yt = null, ytReady = false, clockOffset = 0, bestRtt = Infinity;
   const now = () => (room ? Date.now() + clockOffset : Date.now());
   const expected = (st) => (st.playing ? st.position + (now() - st.ref) / 1000 : st.position);
+  const audio = $('#au');
 
   function initYT() {
     yt = new YT.Player('yt', {
       width: '100%', height: '100%',
       playerVars: { playsinline: 1, controls: 0, disablekb: 1, rel: 0, modestbranding: 1, fs: 0, iv_load_policy: 3 },
-      events: { onReady: () => { ytReady = true; tick(); }, onStateChange: onYTState, onError: () => { toast("This song can't play outside YouTube. Skipping."); act({ type: 'next', from: engine.state.index }); } },
+      events: { onReady: () => { ytReady = true; tick(); }, onStateChange: onYTState, onError: () => { if (engine.state.track?.source === 'yt') skipBroken(); } },
     });
   }
   if (window.YT && window.YT.Player) initYT(); else window.onYouTubeIframeAPIReady = initYT;
 
+  function skipBroken() { toast("This song can't play here. Skipping."); act({ type: 'next', from: engine.state.index }); }
+  function startedPlaying() { $('#tapAudio').classList.add('hidden'); if (engine.holding) { engine.holding = false; send({ type: 'release' }); } updateButtons(); }
+
   function onYTState(e) {
-    const st = engine.state;
-    if (e.data === YT.PlayerState.ENDED) { act({ type: 'next', from: st.index }); }
-    if (e.data === YT.PlayerState.PLAYING) { $('#tapAudio').classList.add('hidden'); if (engine.holding) { engine.holding = false; send({ type: 'release' }); } }
+    if (engine.state.track?.source !== 'yt') return;
+    if (e.data === YT.PlayerState.ENDED) act({ type: 'next', from: engine.state.index });
+    if (e.data === YT.PlayerState.PLAYING) startedPlaying();
     updateButtons();
   }
+  audio.addEventListener('ended', () => act({ type: 'next', from: engine.state.index }));
+  audio.addEventListener('playing', startedPlaying);
+  audio.addEventListener('error', () => { if (engine.state.track?.source === 'au' && audio.getAttribute('src')) skipBroken(); });
+  // Audio can't seek until it knows the length, so jump to the shared position once it does.
+  audio.addEventListener('loadedmetadata', () => { audio.currentTime = Math.max(0, expected(engine.state)); engine.lastSeek = Date.now(); });
+
+  // Both outputs share one small interface, so the sync loop doesn't care where a song comes from.
+  const ytStatus = () => ({ [YT.PlayerState.PLAYING]: 'playing', [YT.PlayerState.BUFFERING]: 'buffering', [YT.PlayerState.ENDED]: 'ended' })[yt.getPlayerState()] || 'paused';
+  const outputs = {
+    yt: {
+      ready: () => ytReady && !!yt?.getPlayerState,
+      load: (t, at) => yt.loadVideoById({ videoId: t.sourceId, startSeconds: Math.max(0, at) }),
+      play: () => yt.playVideo(), pause: () => yt.pauseVideo(), seek: (s) => yt.seekTo(s, true),
+      time: () => yt.getCurrentTime() || 0, duration: () => yt.getDuration?.() || 0, status: ytStatus,
+      stop: () => { try { yt.stopVideo(); } catch {} },
+    },
+    au: {
+      ready: () => true,
+      load: (t) => { audio.src = `https://api.audius.co/v1/tracks/${encodeURIComponent(t.sourceId)}/stream?app_name=aux-music`; },
+      play: () => audio.play().catch(() => {}), pause: () => audio.pause(), seek: (s) => { audio.currentTime = s; },
+      time: () => audio.currentTime || 0, duration: () => (Number.isFinite(audio.duration) ? audio.duration : 0),
+      status: () => (audio.ended ? 'ended' : audio.paused ? 'paused' : audio.readyState < 3 ? 'buffering' : 'playing'),
+      stop: () => { audio.pause(); audio.removeAttribute('src'); audio.load(); },
+    },
+  };
+  const out = () => outputs[engine.state.track?.source] || null;
 
   // Apply an action locally (solo) or send it to the room (synced).
   function act(m) {
     if (room) return send(m);
     const st = engine.state;
-    if (m.type === 'load') Object.assign(st, { queue: m.queue, index: m.index, playlistId: m.playlistId, ...m.queue[m.index], playing: true, position: 0, ref: Date.now() });
+    if (m.type === 'load') Object.assign(st, { queue: m.queue, index: m.index, playlistId: m.playlistId, track: m.queue[m.index], playing: true, position: 0, ref: Date.now() });
     else if (m.type === 'pause') Object.assign(st, { position: expected(st), playing: false, ref: Date.now() });
     else if (m.type === 'resume') Object.assign(st, { playing: true, ref: Date.now() });
     else if (m.type === 'seek') Object.assign(st, { position: m.position, ref: Date.now() });
@@ -428,7 +482,7 @@
       if (m.type === 'next' && Number.isInteger(m.from) && m.from !== st.index) return;
       const ni = st.index + (m.type === 'next' ? 1 : -1);
       if (ni < 0 || ni >= st.queue.length) Object.assign(st, { playing: false, position: 0, ref: Date.now() });
-      else Object.assign(st, { index: ni, ...st.queue[ni], playing: true, position: 0, ref: Date.now() });
+      else Object.assign(st, { index: ni, track: st.queue[ni], playing: true, position: 0, ref: Date.now() });
     } else return;
     afterStateChange();
   }
@@ -439,60 +493,72 @@
 
   function afterStateChange() {
     const st = engine.state;
-    if (st.videoId) $('#player').classList.remove('hidden');
-    if (st.videoId !== engine.listenId) { engine.listenId = st.videoId; engine.listened = 0; }
+    if (st.track) $('#player').classList.remove('hidden');
+    if (st.track?.id !== engine.listenId) { engine.listenId = st.track?.id; engine.listened = 0; }
     renderPlayerMeta(); tick();
-    if (location.hash.startsWith('#p-')) view.querySelectorAll('.song').forEach((li) => li.classList.toggle('now', li.querySelector('img')?.src.includes(`/${st.videoId}/`)));
+    if (location.hash.startsWith('#p-')) view.querySelectorAll('.song').forEach((li) => li.classList.toggle('now', li.dataset.id === st.track?.id));
   }
 
-  // The sync loop: keep the YouTube player where the shared clock says it should be.
+  // Show the video for YouTube songs and the cover for Audius songs.
+  function showOutput(t) {
+    $('#videoWrap').classList.toggle('audio', t.source === 'au');
+    if (t.source === 'au') $('#artBig').src = t.art || '';
+    $('#tapAudio').textContent = t.source === 'au' ? 'Tap the cover to start the music' : 'Tap the video to start the music';
+  }
+  $('#videoWrap').addEventListener('click', () => { if (engine.state.track?.source === 'au' && engine.state.playing) audio.play().catch(() => {}); });
+
+  // The sync loop: keep the active output where the shared clock says it should be.
   function tick() {
-    if (!ytReady || !yt?.getPlayerState) return;
-    const st = engine.state;
-    if (!st.videoId) return;
+    const st = engine.state, o = out();
+    if (!st.track || !o?.ready()) return;
     const exp = expected(st);
-    if (engine.loaded !== st.videoId) {
-      engine.loaded = st.videoId; engine.lastSeek = Date.now();
-      yt.loadVideoById({ videoId: st.videoId, startSeconds: Math.max(0, exp) });
-      if (!st.playing || exp < 0) setTimeout(() => { if (!engine.state.playing || expected(engine.state) < 0) yt.pauseVideo(); }, 400);
+    if (engine.loaded !== st.track.id) {
+      for (const [k, other] of Object.entries(outputs)) if (k !== st.track.source && other.ready()) other.stop();
+      engine.loaded = st.track.id; engine.lastSeek = Date.now();
+      showOutput(st.track);
+      o.load(st.track, exp);
+      if (st.playing && exp >= 0) o.play();
+      if (!st.playing || exp < 0) setTimeout(() => { if (!engine.state.playing || expected(engine.state) < 0) out()?.pause(); }, 400);
       setTimeout(checkAutoplay, 3000);
       return;
     }
-    const ps = yt.getPlayerState();
-    const cur = yt.getCurrentTime() || 0;
+    const status = o.status(), cur = o.time();
     if (!st.playing || exp < 0) {
-      if (ps === YT.PlayerState.PLAYING) yt.pauseVideo();
+      if (status === 'playing' || status === 'buffering') o.pause();
       const target = Math.max(0, exp < 0 ? 0 : st.position);
-      if (Math.abs(cur - target) > 0.6 && Date.now() - engine.lastSeek > 800) { yt.seekTo(target, true); engine.lastSeek = Date.now(); }
+      if (Math.abs(cur - target) > 0.6 && Date.now() - engine.lastSeek > 800) { o.seek(target); engine.lastSeek = Date.now(); }
       return;
     }
-    if (ps !== YT.PlayerState.PLAYING && ps !== YT.PlayerState.BUFFERING) yt.playVideo();
+    if (status === 'paused') o.play();
     // Long buffering (often an ad) pauses everyone until this phone catches up.
-    if (room && ps === YT.PlayerState.BUFFERING) {
+    if (room && status === 'buffering') {
       engine.bufferSince ||= Date.now();
       if (!engine.holding && Date.now() - engine.bufferSince > 3000 && Date.now() - engine.lastSeek > 4000) { engine.holding = true; send({ type: 'hold' }); }
     } else engine.bufferSince = 0;
     const drift = cur - exp;
-    if (ps === YT.PlayerState.PLAYING && Math.abs(drift) > 0.35 && Date.now() - engine.lastSeek > 2000) {
-      yt.seekTo(exp + 0.2, true); engine.lastSeek = Date.now(); // small lead covers the seek's own delay
+    if (status === 'playing' && Math.abs(drift) > 0.35 && Date.now() - engine.lastSeek > 2000) {
+      o.seek(exp + 0.2); engine.lastSeek = Date.now(); // small lead covers the seek's own delay
     }
-    // Earn credits by listening.
-    if (ps === YT.PlayerState.PLAYING && st.playlistId) {
-      engine.listened += 0.5;
-      const key = `${st.videoId}|${st.playlistId}`;
+    // Earn credits by listening. Timers slow down with the screen off, so count real time.
+    const dt = Math.min(60, (Date.now() - (engine.lastTick || Date.now())) / 1000);
+    engine.lastTick = Date.now();
+    if (status === 'playing' && st.playlistId) {
+      engine.listened += dt;
+      const key = `${st.track.id}|${st.playlistId}`;
       if (engine.listened >= 30 && engine.creditedFor !== key) {
         engine.creditedFor = key;
-        api('/api/listen', { method: 'POST', body: { playlistId: st.playlistId, videoId: st.videoId } }).then((r) => { if (r.earned) { setCredits(r.credits); toast('You earned 1 credit for listening.'); } }).catch(() => {});
+        api('/api/listen', { method: 'POST', body: { playlistId: st.playlistId, trackId: st.track.id } }).then((r) => { if (r.earned) { setCredits(r.credits); toast('You earned 1 credit for listening.'); } }).catch(() => {});
       }
     }
   }
   setInterval(() => { tick(); updateProgress(); }, 500);
 
   function checkAutoplay() {
-    if (!engine.state.playing || !ytReady) return;
-    if (yt.getPlayerState() !== YT.PlayerState.PLAYING && yt.getPlayerState() !== YT.PlayerState.BUFFERING) {
+    const o = out();
+    if (!engine.state.playing || !o?.ready()) return;
+    if (!['playing', 'buffering'].includes(o.status())) {
       $('#tapAudio').classList.remove('hidden');
-      if ($('#player').classList.contains('mini')) toast('Tap the video to start the music on this phone.');
+      if ($('#player').classList.contains('mini')) toast('Tap the player to start the music on this phone.');
     }
   }
 
@@ -503,33 +569,44 @@
   function collapsePlayer() { P.classList.remove('full'); P.classList.add('mini'); document.body.style.overflow = ''; }
   $('#playerMeta').onclick = (e) => { if (P.classList.contains('mini') && !e.target.closest('button')) expandPlayer(); };
   $('#collapseBtn').onclick = collapsePlayer;
-  const toggle = () => { const st = engine.state; act(st.playing ? { type: 'pause', position: yt?.getCurrentTime?.() } : { type: 'resume', position: st.position }); };
+  const toggle = () => { const st = engine.state; act(st.playing ? { type: 'pause', position: out()?.time() } : { type: 'resume', position: st.position }); };
+  const prev = () => { if (expected(engine.state) > 4) act({ type: 'seek', position: 0 }); else act({ type: 'prev' }); };
   $('#toggleBtn').onclick = toggle; $('#miniToggle').onclick = toggle;
   $('#nextBtn').onclick = () => act({ type: 'next' }); $('#miniNext').onclick = () => act({ type: 'next' });
-  $('#prevBtn').onclick = () => {
-    if (expected(engine.state) > 4) act({ type: 'seek', position: 0 }); else act({ type: 'prev' });
-  };
+  $('#prevBtn').onclick = prev;
   let seeking = false;
-  $('#seek').oninput = () => { seeking = true; $('#tCur').textContent = fmt($('#seek').value / 100 * (yt?.getDuration?.() || 0)); };
-  $('#seek').onchange = () => { seeking = false; act({ type: 'seek', position: $('#seek').value / 100 * (yt?.getDuration?.() || 0) }); };
+  $('#seek').oninput = () => { seeking = true; $('#tCur').textContent = fmt($('#seek').value / 100 * (out()?.duration() || 0)); };
+  $('#seek').onchange = () => { seeking = false; act({ type: 'seek', position: $('#seek').value / 100 * (out()?.duration() || 0) }); };
+
+  // Lock-screen and headphone controls.
+  if ('mediaSession' in navigator) {
+    const ms = navigator.mediaSession;
+    ms.setActionHandler('play', () => { if (!engine.state.playing) toggle(); });
+    ms.setActionHandler('pause', () => { if (engine.state.playing) toggle(); });
+    ms.setActionHandler('nexttrack', () => act({ type: 'next' }));
+    ms.setActionHandler('previoustrack', prev);
+  }
 
   function updateButtons() {
     const playing = engine.state.playing;
     for (const b of [$('#toggleBtn'), $('#miniToggle')]) { b.querySelector('use').setAttribute('href', playing ? '#i-pause' : '#i-play'); b.setAttribute('aria-label', playing ? 'Pause' : 'Play'); }
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = engine.state.track ? (playing ? 'playing' : 'paused') : 'none';
   }
   function updateProgress() {
-    if (!ytReady || !engine.state.videoId || seeking) return;
-    const d = yt.getDuration?.() || 0, c = Math.max(0, Math.min(d, expected(engine.state)));
+    const o = out();
+    if (!o?.ready() || seeking) return;
+    const d = o.duration(), c = Math.max(0, Math.min(d, expected(engine.state)));
     $('#seek').value = d ? (c / d) * 100 : 0; $('#tCur').textContent = fmt(c); $('#tDur').textContent = fmt(d);
   }
   function renderPlayerMeta() {
-    const st = engine.state;
-    $('#pmTitle').textContent = st.title || 'Nothing playing';
-    $('#pmSub').textContent = room ? `In sync with ${room.members.filter((m) => m.id !== me?.id).map((m) => '@' + m.id).join(', ') || 'no one yet'}` : (st.author || '');
+    const st = engine.state, t = st.track;
+    $('#pmTitle').textContent = t?.title || 'Nothing playing';
+    $('#pmSub').textContent = room ? `In sync with ${room.members.filter((m) => m.id !== me?.id).map((m) => '@' + m.id).join(', ') || 'no one yet'}` : (t?.author || '');
     $('#sheetLabel').textContent = room ? 'Playing in sync' : 'Now playing';
     $('#syncStrip').innerHTML = room ? `<div class="stack">${room.members.map((m) => avatar(m, 'sm')).join('')}</div><div style="flex:1;min-width:0"><div class="live-pill">In sync</div><div class="small muted">Everyone controls play, pause and skip.</div></div><a class="link-btn" href="#sync">Manage</a>` : '';
-    $('#queueList').innerHTML = st.queue.map((s, i) => `<li data-q="${i}" class="${i === st.index ? 'cur' : ''}"><span class="n">${i + 1}</span><img src="${thumb(s.videoId)}" alt=""><div style="min-width:0"><div class="qt">${esc(s.title)}</div><div class="qa">${esc(s.author)}</div></div></li>`).join('');
+    $('#queueList').innerHTML = st.queue.map((s, i) => `<li data-q="${i}" class="${i === st.index ? 'cur' : ''}"><span class="n">${i + 1}</span><img src="${art(s)}" alt=""><div style="min-width:0"><div class="qt">${esc(s.title)}</div><div class="qa">${esc(s.author)}</div></div></li>`).join('');
     $('#queueList').querySelectorAll('[data-q]').forEach((li) => li.onclick = () => act({ type: 'load', queue: st.queue, index: +li.dataset.q, playlistId: st.playlistId }));
+    if ('mediaSession' in navigator && t) navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.author, album: 'Aux', artwork: t.art ? [{ src: t.art, sizes: '480x480', type: 'image/jpeg' }] : [] });
     updateButtons();
   }
 
@@ -564,7 +641,6 @@
       if (room) {
         const s = room.state;
         engine.state = { ...s };
-        if (!s.videoId && was?.state?.videoId == null) { /* nothing yet */ }
       } else if (was) {
         // Leaving keeps the song going on this phone from where the room was.
         const st = engine.state; Object.assign(st, { position: Math.max(0, st.playing ? st.position + (Date.now() + clockOffset - st.ref) / 1000 : st.position), ref: Date.now() });

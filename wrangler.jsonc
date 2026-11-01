@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "aux-music",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-09-01",
+  "observability": { "enabled": true },
+  "routes": [{ "pattern": "music.africanspring.co.za", "custom_domain": true }],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/ws", "/.well-known/*"]
+  },
+  "durable_objects": { "bindings": [{ "name": "HUB", "class_name": "Hub" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Hub"] }],
+  "d1_databases": [
+    { "binding": "DB", "database_name": "aux", "database_id": "418a533a-e741-45c8-911a-7158947d793c", "migrations_dir": "migrations" }
+  ]
+  // Set in the dashboard or with `wrangler secret put`, not here:
+  //   YT_API_KEY (secret), GOOGLE_CLIENT_ID, ANDROID_PACKAGE, ANDROID_SHA256
+}

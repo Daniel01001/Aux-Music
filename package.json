@@ -1,20 +1,17 @@
 {
   "name": "aux",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Aux: short social playlists and listening in sync",
+  "main": "src/worker.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "dev": "wrangler dev",
+    "deploy": "wrangler d1 migrations apply aux --remote && wrangler deploy",
+    "db:local": "wrangler d1 migrations apply aux --local"
   },
-  "keywords": [],
   "author": "",
   "license": "ISC",
-  "dependencies": {
-    "express": "^4.22.3",
-    "ws": "^8.22.1"
-  },
-  "engines": {
-    "node": ">=18"
+  "dependencies": {},
+  "devDependencies": {
+    "wrangler": "^4.156.0"
   }
 }
