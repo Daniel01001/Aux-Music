@@ -14,6 +14,14 @@ Playlists hold **songs**, not videos. Each song has a source:
 
 Home has a **Fresh finds** row of trending Audius (and Jamendo) songs, which the server rebuilds every hour. You can save any song you hear to one of your own playlists, which is always free.
 
+## Social and account features
+
+- **Add several songs at once:** pick songs from search, or paste a YouTube Music album or playlist link (or an Audius one) and pick from it. On someone else's playlist each song costs 1 credit.
+- **Likes:** anyone can like a song. When a playlist's owner likes a song someone else added, that person earns 1 credit (once per song), and it shows as **Owner's pick**.
+- **Inbox:** saves "added a song" and "liked your pick" notes. When the person is offline, they also get a **web push** notification if they turned notifications on. Pushes carry no content: the service worker fetches the newest note from `/api/push/latest`.
+- **Account:** edit name, bio and photo; change your @ID (once every 30 days); see devices and sign them out; download your data; delete your account.
+- **Legal pages:** `/privacy` and `/terms`. Fill in the operator name and contact email placeholders before launch.
+
 ## Stack
 
 Cloudflare Workers, no build step:
@@ -43,6 +51,7 @@ Settings live on the `aux-music` Worker in the Cloudflare dashboard (Settings â†
 
 - `YT_API_KEY` (secret): turns on YouTube search. Set it with `npx wrangler secret put YT_API_KEY`.
 - `GOOGLE_CLIENT_ID`: turns on Sign in with Google and turns off the plain ID signup. Set in `wrangler.jsonc`.
+- `VAPID_PRIVATE_KEY` (secret): signs web push. Its public half is `VAPID_PUBLIC_KEY` in `wrangler.jsonc`. If you replace one, replace both, and everyone must turn notifications on again.
 - `JAMENDO_CLIENT_ID` (secret): turns on Jamendo. Get one free at devportal.jamendo.com, then run `npx wrangler secret put JAMENDO_CLIENT_ID`.
 - `ANDROID_PACKAGE`, `ANDROID_SHA256`: the Android app's package name and signing-key fingerprint(s), served at `/.well-known/assetlinks.json`.
 

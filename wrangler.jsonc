@@ -18,8 +18,10 @@
   ],
   // Public values only. The OAuth client ID is visible to every browser anyway.
   "vars": {
-    "GOOGLE_CLIENT_ID": "632209402259-76jbita286ahuhf4257c2j4vpg12pglf.apps.googleusercontent.com"
+    "GOOGLE_CLIENT_ID": "632209402259-76jbita286ahuhf4257c2j4vpg12pglf.apps.googleusercontent.com",
+    // Web push: the public half of the VAPID key pair. The private half is the VAPID_PRIVATE_KEY secret.
+    "VAPID_PUBLIC_KEY": "BBYUjm7ZECymhuCYinske5Bl8706CFXYhc4S1imivN8aQxbvkW3b4cjWxJN_Wx988LMssOi3LCUAARQRPWkSpGY"
   }
   // Set with `wrangler secret put` or in the dashboard, not here:
-  //   YT_API_KEY (secret), ANDROID_PACKAGE, ANDROID_SHA256
+  //   YT_API_KEY, JAMENDO_CLIENT_ID, VAPID_PRIVATE_KEY (secrets), ANDROID_PACKAGE, ANDROID_SHA256
 }

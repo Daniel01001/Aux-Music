@@ -2,6 +2,7 @@
 // Users, playlists and credits live in D1. Rooms, invites and disconnect timers live in this
 // object's own storage, so they survive the object hibernating between messages.
 import { DurableObject } from 'cloudflare:workers';
+import { ring } from './push.js';
 
 const START_CREDITS = 5;
 const MAX_SONGS = 10;
@@ -11,6 +12,15 @@ const AUDIUS = 'https://api.audius.co/v1';
 const JAMENDO = 'https://api.jamendo.com/v3.0';
 const APP_NAME = 'aux-music';
 const SEARCH_TTL = 24 * 3600_000;
+const HANDLE_COOLDOWN = 30 * 24 * 3600_000; // @IDs are how friends find you, so they change rarely
+
+// A short, human label for a sign-in, from the browser's user agent.
+function deviceLabel(ua = '') {
+  const os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /Mac OS X/.test(ua) ? 'Mac' : /Linux/.test(ua) ? 'Linux' : 'Device';
+  const browser = /Edg\//.test(ua) ? 'Edge' : /SamsungBrowser/.test(ua) ? 'Samsung Internet' : /CriOS|Chrome\//.test(ua) ? 'Chrome' : /FxiOS|Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : 'browser';
+  return `${browser} on ${os}`;
+}
+const songToTrack = ({ addedBy, addedAt, likes, liked, ownerLiked, ...t }) => t;
 
 const json = (data, status = 200) => Response.json(data, { status });
 const fail = (status, error) => json({ error }, status);
@@ -45,10 +55,17 @@ const isAudiusUrl = (s) => { try { return new URL(String(s).trim()).hostname.end
 // jamendo.com/track/1234567/some-slug
 const jamendoId = (s) => { try { const u = new URL(String(s).trim()); return u.hostname.endsWith('jamendo.com') ? u.pathname.match(/\/track\/(\d+)/)?.[1] || null : null; } catch { return null; } };
 
-async function fetchJson(url, ms = 5000) {
-  const r = await fetch(url, { signal: AbortSignal.timeout(ms) });
-  if (!r.ok) return null;
-  return r.json();
+// Music APIs are sometimes slow or briefly refuse bursts, so allow time and one retry.
+async function fetchJson(url, ms = 8000, tries = 2) {
+  for (let i = 0; i < tries; i++) {
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(ms) });
+      if (r.ok) return r.json();
+      if (r.status < 500 && r.status !== 429) return null; // a real "no": don't retry
+    } catch (e) { if (i === tries - 1) throw e; }
+    await new Promise((res) => setTimeout(res, 400 * (i + 1)));
+  }
+  return null;
 }
 
 const audiusTrack = (t) => t && ({
@@ -90,27 +107,32 @@ export class Hub extends DurableObject {
 
   // ---------- users ----------
   isOnline(uid) { return this.ctx.getWebSockets(uid).length > 0; }
-  publicUser(u) { return u && { id: u.id, name: u.name, sample: !!u.sample, online: this.isOnline(u.id) }; }
-  meUser(u) { return { ...this.publicUser(u), credits: u.credits }; }
+  publicUser(u) { return u && { id: u.id, name: u.name, sample: !!u.sample, online: this.isOnline(u.id), avatar: u.avatar || null, bio: u.bio || '' }; }
+  meUser(u) {
+    return { ...this.publicUser(u), credits: u.credits, email: u.email || null, hasGooglePhoto: !!u.google_picture,
+      canChangeHandleAt: (u.handle_changed_at || 0) + HANDLE_COOLDOWN };
+  }
   getUser(id) { return this.db.prepare('SELECT * FROM users WHERE id = ?').bind(id).first(); }
+  // The user plus session_hash, so we know which device is asking.
   async userByToken(token) {
     if (!token) return null;
-    return this.db.prepare('SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND u.sample = 0').bind(await sha256(token)).first();
+    return this.db.prepare('SELECT u.*, s.token_hash AS session_hash FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND u.sample = 0').bind(await sha256(token)).first();
   }
-  async sessionStmt(uid) {
+  async sessionStmt(uid, device) {
     const token = crypto.randomUUID();
-    return [token, this.db.prepare('INSERT INTO sessions (token_hash, user_id, created_at) VALUES (?, ?, ?)').bind(await sha256(token), uid, Date.now())];
+    const now = Date.now();
+    return [token, this.db.prepare('INSERT INTO sessions (token_hash, user_id, created_at, device, last_seen) VALUES (?, ?, ?, ?, ?)').bind(await sha256(token), uid, now, device || null, now)];
   }
   async createUser(handle, name, extra = {}) {
     const now = Date.now();
-    const [token, session] = await this.sessionStmt(handle);
+    const [token, session] = await this.sessionStmt(handle, extra.device);
     await this.db.batch([
-      this.db.prepare('INSERT INTO users (id, name, credits, google_sub, email, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-        .bind(handle, name, START_CREDITS, extra.googleSub || null, extra.email || null, now),
+      this.db.prepare('INSERT INTO users (id, name, credits, google_sub, email, google_picture, avatar, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .bind(handle, name, START_CREDITS, extra.googleSub || null, extra.email || null, extra.picture || null, extra.picture || null, now),
       session,
       this.db.prepare('INSERT INTO credit_ledger (user_id, delta, reason, at) VALUES (?, ?, ?, ?)').bind(handle, START_CREDITS, 'start', now),
     ]);
-    return { token, user: this.meUser({ id: handle, name, credits: START_CREDITS }) };
+    return { token, user: this.meUser(await this.getUser(handle)) };
   }
   async checkNewUser(handle, name) {
     if (!/^[a-z0-9_]{3,20}$/.test(handle)) return [400, 'Use 3 to 20 letters, numbers or underscores.'];
@@ -119,27 +141,33 @@ export class Hub extends DurableObject {
     return null;
   }
   // A new session per sign-in, so each device stays signed in on its own.
-  async newSession(uid) {
-    const [token, session] = await this.sessionStmt(uid);
+  async newSession(uid, device) {
+    const [token, session] = await this.sessionStmt(uid, device);
     await session.run();
     return token;
   }
 
   // ---------- playlists ----------
-  // where: SQL on aliases p (playlists) and u (owner).
-  async loadPlaylists(where = '', ...args) {
+  // meId: who's asking, for their own likes. where: SQL on aliases p (playlists) and u (owner).
+  async loadPlaylists(meId, where = '', ...args) {
     const { results: pls } = await this.db.prepare(
-      `SELECT p.id, p.owner, p.name, p.created_at, u.name AS owner_name, u.sample FROM playlists p JOIN users u ON u.id = p.owner ${where} ORDER BY p.created_at DESC LIMIT 200`,
+      `SELECT p.id, p.owner, p.name, p.created_at, u.name AS owner_name, u.sample, u.avatar AS owner_avatar FROM playlists p JOIN users u ON u.id = p.owner ${where} ORDER BY p.created_at DESC LIMIT 200`,
     ).bind(...args).all();
+    const likesOf = (who) => `EXISTS (SELECT 1 FROM likes l WHERE l.playlist_id = ps.playlist_id AND l.track_id = ps.track_id AND l.user_id = ${who})`;
     const { results: songs } = await this.db.prepare(
-      `SELECT ps.playlist_id, ps.added_by, ps.added_at, t.* FROM playlist_songs ps JOIN tracks t ON t.id = ps.track_id
+      `SELECT ps.playlist_id, ps.added_by, ps.added_at, t.*,
+         (SELECT count(*) FROM likes l WHERE l.playlist_id = ps.playlist_id AND l.track_id = ps.track_id) AS likes,
+         ${likesOf('?')} AS liked, ${likesOf('p.owner')} AS owner_liked
+       FROM playlist_songs ps JOIN tracks t ON t.id = ps.track_id
        JOIN playlists p ON p.id = ps.playlist_id JOIN users u ON u.id = p.owner ${where} ORDER BY ps.added_at`,
-    ).bind(...args).all();
-    const byId = new Map(pls.map((p) => [p.id, { id: p.id, owner: p.owner, ownerName: p.owner_name, sample: !!p.sample, name: p.name, createdAt: p.created_at, songs: [] }]));
-    for (const s of songs) byId.get(s.playlist_id)?.songs.push({ ...trackOut(s), addedBy: s.added_by, addedAt: s.added_at });
+    ).bind(meId || '', ...args).all();
+    const byId = new Map(pls.map((p) => [p.id, { id: p.id, owner: p.owner, ownerName: p.owner_name, ownerAvatar: p.owner_avatar, sample: !!p.sample, name: p.name, createdAt: p.created_at, songs: [] }]));
+    for (const s of songs) {
+      byId.get(s.playlist_id)?.songs.push({ ...trackOut(s), addedBy: s.added_by, addedAt: s.added_at, likes: s.likes, liked: !!s.liked, ownerLiked: !!s.owner_liked });
+    }
     return [...byId.values()];
   }
-  async playlist(id) { return (await this.loadPlaylists('WHERE p.id = ?', id))[0] || null; }
+  async playlist(id, meId = null) { return (await this.loadPlaylists(meId, 'WHERE p.id = ?', id))[0] || null; }
 
   // ---------- song lookup ----------
   // Always fetches the song's details from its source, so clients can't add made-up titles.
@@ -170,7 +198,7 @@ export class Hub extends DurableObject {
           return { id: `yt:${sourceId}`, source: 'yt', sourceId, title: v.snippet.title, author: cleanAuthor(v.snippet.channelTitle), art: ytArt(sourceId) };
         }
       }
-      const o = await fetchJson(`https://www.youtube.com/oembed?format=json&url=https://www.youtube.com/watch?v=${sourceId}`, 4000).catch(() => null);
+      const o = await fetchJson(`https://www.youtube.com/oembed?format=json&url=https://www.youtube.com/watch?v=${sourceId}`, 6000).catch(() => null);
       if (!o) throw new Error("Couldn't load that video. It may be private or blocked from playing outside YouTube.");
       return { id: `yt:${sourceId}`, source: 'yt', sourceId, title: o.title, author: cleanAuthor(o.author_name), art: ytArt(sourceId) };
     }
@@ -242,6 +270,41 @@ export class Hub extends DurableObject {
     });
   }
 
+  // The songs on a YouTube Music album or playlist, or an Audius album or playlist, to pick from.
+  async collection(input) {
+    const s = String(input || '').trim();
+    let u;
+    try { u = new URL(s); } catch { throw new Error('Paste an album or playlist link.'); }
+    const list = u.searchParams.get('list');
+    if (list && /(^|\.)youtube\.com$|(^|\.)youtu\.be$/.test(u.hostname)) {
+      if (!this.env.YT_API_KEY) throw new Error('Album import needs YouTube search switched on.');
+      // playlists + playlistItems cost 1 quota unit each, and the result is cached for a day.
+      return this.cached(`ytl:${list}`, SEARCH_TTL, async () => {
+        const key = this.env.YT_API_KEY, id = encodeURIComponent(list);
+        const [meta, items] = await Promise.all([
+          fetchJson(`https://www.googleapis.com/youtube/v3/playlists?part=snippet&id=${id}&key=${key}`),
+          fetchJson(`https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,status&maxResults=50&playlistId=${id}&key=${key}`),
+        ]);
+        if (!items?.items) throw new Error("Couldn't open that playlist. It may be private.");
+        const tracks = items.items
+          .filter((i) => i.snippet?.resourceId?.videoId && i.status?.privacyStatus !== 'private' && !/^(Deleted|Private) video$/.test(i.snippet.title))
+          .map((i) => {
+            const v = i.snippet.resourceId.videoId;
+            return { id: `yt:${v}`, source: 'yt', sourceId: v, title: decode(i.snippet.title), author: cleanAuthor(decode(i.snippet.videoOwnerChannelTitle || '')), art: ytArt(v) };
+          });
+        return { title: (meta?.items?.[0]?.snippet?.title || 'YouTube playlist').replace(/^Album - /, ''), tracks };
+      });
+    }
+    if (isAudiusUrl(s)) {
+      const j = await fetchJson(`${AUDIUS}/resolve?url=${encodeURIComponent(s)}&app_name=${APP_NAME}`).catch(() => null);
+      const d = Array.isArray(j?.data) ? j.data[0] : j?.data;
+      if (!d?.playlist_name) throw new Error('That Audius link is not an album or playlist.');
+      const t = await fetchJson(`${AUDIUS}/playlists/${encodeURIComponent(d.id)}/tracks?app_name=${APP_NAME}`).catch(() => null);
+      return { title: d.playlist_name, tracks: (t?.data || []).map(audiusTrack).filter((x) => x.playable).map(publicTrack) };
+    }
+    throw new Error('Paste a YouTube Music album or playlist link, or an Audius album.');
+  }
+
   // ---------- HTTP ----------
   async fetch(req) {
     const url = new URL(req.url);
@@ -252,26 +315,86 @@ export class Hub extends DurableObject {
 
   async api(req, url) {
     const m = req.method, path = url.pathname;
-    const body = m === 'POST' ? await req.json().catch(() => ({})) : {};
+    const body = m === 'POST' || m === 'PATCH' ? await req.json().catch(() => ({})) : {};
+    const device = deviceLabel(req.headers.get('User-Agent') || '');
 
     if (m === 'POST' && path === '/api/signup') {
       if (this.env.GOOGLE_CLIENT_ID) return fail(403, 'Sign in with Google.');
       const handle = cleanHandle(body.handle), name = cleanName(body.name);
       const bad = await this.checkNewUser(handle, name);
       if (bad) return fail(...bad);
-      return json(await this.createUser(handle, name));
+      return json(await this.createUser(handle, name, { device }));
     }
 
-    if (m === 'POST' && path === '/api/auth/google') return this.googleAuth(body);
+    if (m === 'POST' && path === '/api/auth/google') return this.googleAuth(body, device);
+
+    // The service worker has no sign-in token; it proves who it is with its own push subscription.
+    if (m === 'POST' && path === '/api/push/latest') {
+      const sub = await this.db.prepare('SELECT user_id FROM push_subs WHERE endpoint = ?').bind(String(body.endpoint || '')).first();
+      const item = sub && await this.db.prepare('SELECT text, url FROM inbox WHERE user_id = ? ORDER BY at DESC LIMIT 1').bind(sub.user_id).first();
+      return json({ title: 'Aux', body: item?.text || 'Something new happened on Aux.', url: item?.url || '#inbox' });
+    }
 
     const me = await this.userByToken((req.headers.get('Authorization') || '').replace('Bearer ', ''));
     if (!me) return fail(401, 'Sign in again.');
 
-    if (m === 'GET' && path === '/api/me') return json(this.meUser(me));
+    // ----- account -----
+    if (m === 'GET' && path === '/api/me') {
+      await this.db.prepare('UPDATE sessions SET last_seen = ?, device = coalesce(device, ?) WHERE token_hash = ?').bind(Date.now(), device, me.session_hash).run();
+      return json({ ...this.meUser(me), unread: await this.unread(me.id) });
+    }
+    if (m === 'PATCH' && path === '/api/me') {
+      const name = body.name === undefined ? me.name : cleanName(body.name);
+      if (!name) return fail(400, 'Add a display name.');
+      const bio = body.bio === undefined ? me.bio : String(body.bio || '').trim().slice(0, 160);
+      const avatar = body.photo === undefined ? me.avatar : (body.photo ? me.google_picture : null);
+      await this.db.prepare('UPDATE users SET name = ?, bio = ?, avatar = ? WHERE id = ?').bind(name, bio || null, avatar || null, me.id).run();
+      return json(this.meUser(await this.getUser(me.id)));
+    }
+    if (m === 'POST' && path === '/api/me/handle') return this.changeHandle(me, body.handle);
+    if (m === 'DELETE' && path === '/api/me') return this.deleteAccount(me);
+    if (m === 'GET' && path === '/api/me/export') return this.exportData(me);
 
+    if (m === 'GET' && path === '/api/sessions') {
+      const { results } = await this.db.prepare('SELECT token_hash, device, created_at, last_seen FROM sessions WHERE user_id = ? ORDER BY last_seen DESC').bind(me.id).all();
+      return json(results.map((s) => ({ id: s.token_hash.slice(0, 16), device: s.device || 'Unknown device', createdAt: s.created_at, lastSeen: s.last_seen || s.created_at, current: s.token_hash === me.session_hash })));
+    }
+    if (m === 'POST' && path === '/api/sessions/others') {
+      await this.db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?').bind(me.id, me.session_hash).run();
+      this.closeSockets(me.id, (sh) => sh !== me.session_hash);
+      return json({ ok: true });
+    }
+    let p = path.match(/^\/api\/sessions\/([0-9a-f]{16})$/);
+    if (p && m === 'DELETE') {
+      await this.db.prepare('DELETE FROM sessions WHERE user_id = ? AND substr(token_hash, 1, 16) = ?').bind(me.id, p[1]).run();
+      this.closeSockets(me.id, (sh) => sh?.startsWith(p[1]));
+      return json({ ok: true });
+    }
+
+    // ----- inbox and push -----
+    if (m === 'GET' && path === '/api/inbox') {
+      const { results } = await this.db.prepare('SELECT id, kind, actor, text, url, at, read FROM inbox WHERE user_id = ? ORDER BY at DESC LIMIT 50').bind(me.id).all();
+      return json({ items: results.map((r) => ({ ...r, read: !!r.read })), unread: results.filter((r) => !r.read).length });
+    }
+    if (m === 'POST' && path === '/api/inbox/read') {
+      await this.db.prepare('UPDATE inbox SET read = 1 WHERE user_id = ? AND read = 0').bind(me.id).run();
+      return json({ unread: 0 });
+    }
+    if (m === 'POST' && path === '/api/push/subscribe') {
+      const endpoint = String(body.endpoint || '');
+      if (!/^https:\/\//.test(endpoint) || endpoint.length > 1000) return fail(400, 'That subscription looks wrong.');
+      await this.db.prepare('INSERT OR REPLACE INTO push_subs (endpoint, user_id, created_at) VALUES (?, ?, ?)').bind(endpoint, me.id, Date.now()).run();
+      return json({ ok: true });
+    }
+    if (m === 'POST' && path === '/api/push/unsubscribe') {
+      await this.db.prepare('DELETE FROM push_subs WHERE endpoint = ? AND user_id = ?').bind(String(body.endpoint || ''), me.id).run();
+      return json({ ok: true });
+    }
+
+    // ----- people and playlists -----
     if (m === 'GET' && path === '/api/feed') {
-      const all = await this.loadPlaylists();
-      return json({ mine: all.filter((p) => p.owner === me.id), others: all.filter((p) => p.owner !== me.id) });
+      const all = await this.loadPlaylists(me.id);
+      return json({ mine: all.filter((x) => x.owner === me.id), others: all.filter((x) => x.owner !== me.id) });
     }
 
     if (m === 'GET' && path === '/api/users') {
@@ -282,11 +405,11 @@ export class Hub extends DurableObject {
       return json(list);
     }
 
-    let p = path.match(/^\/api\/users\/([a-z0-9_]+)$/);
+    p = path.match(/^\/api\/users\/([a-z0-9_]+)$/);
     if (m === 'GET' && p) {
       const u = await this.getUser(p[1]);
       if (!u) return fail(404, 'No one has that ID.');
-      return json({ user: this.publicUser(u), playlists: await this.loadPlaylists('WHERE p.owner = ?', u.id) });
+      return json({ user: this.publicUser(u), playlists: await this.loadPlaylists(me.id, 'WHERE p.owner = ?', u.id) });
     }
 
     if (m === 'POST' && path === '/api/playlists') {
@@ -294,21 +417,31 @@ export class Hub extends DurableObject {
       if (!name) return fail(400, 'Give the playlist a name.');
       const id = randomHex(5);
       await this.db.prepare('INSERT INTO playlists (id, owner, name, created_at) VALUES (?, ?, ?, ?)').bind(id, me.id, name, Date.now()).run();
-      return json(await this.playlist(id));
+      return json(await this.playlist(id, me.id));
     }
 
     p = path.match(/^\/api\/playlists\/([0-9a-f]{10})$/);
     if (p && m === 'GET') {
-      const pl = await this.playlist(p[1]);
+      const pl = await this.playlist(p[1], me.id);
       return pl ? json(pl) : fail(404, 'Playlist not found.');
     }
     if (p && m === 'DELETE') {
-      const r = await this.db.prepare('DELETE FROM playlists WHERE id = ? AND owner = ?').bind(p[1], me.id).run();
-      return r.meta.changes ? json({ ok: true }) : fail(403, 'Only the owner can delete this playlist.');
+      const owned = await this.db.prepare('SELECT 1 FROM playlists WHERE id = ? AND owner = ?').bind(p[1], me.id).first();
+      if (!owned) return fail(403, 'Only the owner can delete this playlist.');
+      await this.db.batch([
+        this.db.prepare('DELETE FROM likes WHERE playlist_id = ?').bind(p[1]),
+        this.db.prepare('DELETE FROM playlists WHERE id = ?').bind(p[1]),
+      ]);
+      return json({ ok: true });
     }
 
+    // ----- songs -----
     if (m === 'GET' && path === '/api/resolve') {
       try { return json(await this.resolveLink(url.searchParams.get('url'))); }
+      catch (e) { return fail(400, e.message); }
+    }
+    if (m === 'GET' && path === '/api/collection') {
+      try { return json(await this.collection(url.searchParams.get('url'))); }
       catch (e) { return fail(400, e.message); }
     }
 
@@ -327,14 +460,21 @@ export class Hub extends DurableObject {
     }
 
     p = path.match(/^\/api\/playlists\/([0-9a-f]{10})\/songs$/);
-    if (p && m === 'POST') return this.addSong(me, p[1], body);
+    if (p && m === 'POST') return this.addSongs(me, p[1], body);
+
+    p = path.match(/^\/api\/playlists\/([0-9a-f]{10})\/songs\/([^/]+)\/like$/);
+    if (p && m === 'POST') return this.toggleLike(me, p[1], decodeURIComponent(p[2]));
 
     p = path.match(/^\/api\/playlists\/([0-9a-f]{10})\/songs\/([^/]+)$/);
     if (p && m === 'DELETE') {
       const pl = await this.db.prepare('SELECT owner FROM playlists WHERE id = ?').bind(p[1]).first();
       if (!pl || pl.owner !== me.id) return fail(403, 'Only the owner can remove songs.');
-      await this.db.prepare('DELETE FROM playlist_songs WHERE playlist_id = ? AND track_id = ?').bind(p[1], decodeURIComponent(p[2])).run();
-      return json(await this.playlist(p[1]));
+      const trackId = decodeURIComponent(p[2]);
+      await this.db.batch([
+        this.db.prepare('DELETE FROM playlist_songs WHERE playlist_id = ? AND track_id = ?').bind(p[1], trackId),
+        this.db.prepare('DELETE FROM likes WHERE playlist_id = ? AND track_id = ?').bind(p[1], trackId),
+      ]);
+      return json(await this.playlist(p[1], me.id));
     }
 
     if (m === 'POST' && path === '/api/listen') return this.listen(me, body);
@@ -342,53 +482,202 @@ export class Hub extends DurableObject {
     return fail(404, 'Not found.');
   }
 
-  async googleAuth(body) {
+  async googleAuth(body, device) {
     const clientId = this.env.GOOGLE_CLIENT_ID;
     if (!clientId) return fail(400, 'Google sign-in is not set up on this server.');
     const c = await fetchJson(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(String(body.credential || ''))}`).catch(() => null);
     const valid = c && c.aud === clientId && ['accounts.google.com', 'https://accounts.google.com'].includes(c.iss) && Number(c.exp) * 1000 > Date.now() && c.sub;
     if (!valid) return fail(401, 'Google sign-in failed. Try again.');
     const existing = await this.db.prepare('SELECT * FROM users WHERE google_sub = ?').bind(c.sub).first();
-    if (existing) return json({ token: await this.newSession(existing.id), user: this.meUser(existing) });
+    if (existing) {
+      // Keep the offered Google photo fresh; only the shown photo if they're already using it.
+      if (c.picture && c.picture !== existing.google_picture) {
+        const showing = existing.avatar && existing.avatar === existing.google_picture;
+        await this.db.prepare('UPDATE users SET google_picture = ?, avatar = ? WHERE id = ?').bind(c.picture, showing ? c.picture : existing.avatar, existing.id).run();
+      }
+      return json({ token: await this.newSession(existing.id, device), user: this.meUser(await this.getUser(existing.id)) });
+    }
     // First sign-in: the client asks for an @ID, then sends the same credential back with it.
     if (!body.handle) return json({ needsHandle: true, name: cleanName(c.given_name || c.name) });
     const handle = cleanHandle(body.handle), name = cleanName(body.name);
     const bad = await this.checkNewUser(handle, name);
     if (bad) return fail(...bad);
-    return json(await this.createUser(handle, name, { googleSub: c.sub, email: c.email }));
+    return json(await this.createUser(handle, name, { googleSub: c.sub, email: c.email, picture: c.picture, device }));
   }
 
-  async addSong(me, playlistId, body) {
+  // ---------- account changes ----------
+  async changeHandle(me, raw) {
+    const handle = cleanHandle(raw);
+    if (handle === me.id) return fail(400, 'That is already your ID.');
+    const nextAllowed = (me.handle_changed_at || 0) + HANDLE_COOLDOWN;
+    if (Date.now() < nextAllowed) return fail(429, `You can change your ID again on ${new Date(nextAllowed).toDateString()}.`);
+    const bad = await this.checkNewUser(handle, me.name);
+    if (bad) return fail(...bad);
+    const old = me.id;
+    const u = await this.getUser(old);
+    const move = (sql) => this.db.prepare(sql).bind(handle, old);
+    // One transaction: copy the user to the new ID, repoint everything, then remove the old row.
+    await this.db.batch([
+      this.db.prepare('UPDATE users SET google_sub = NULL WHERE id = ?').bind(old),
+      this.db.prepare(`INSERT INTO users (id, name, credits, google_sub, email, sample, created_at, bio, avatar, google_picture, handle_changed_at)
+        VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`).bind(handle, u.name, u.credits, u.google_sub, u.email, u.created_at, u.bio, u.avatar, u.google_picture, Date.now()),
+      move('UPDATE sessions SET user_id = ? WHERE user_id = ?'),
+      move('UPDATE playlists SET owner = ? WHERE owner = ?'),
+      move('UPDATE playlist_songs SET added_by = ? WHERE added_by = ?'),
+      move('UPDATE credit_ledger SET user_id = ? WHERE user_id = ?'),
+      move('UPDATE listens SET user_id = ? WHERE user_id = ?'),
+      move('UPDATE likes SET user_id = ? WHERE user_id = ?'),
+      move('UPDATE inbox SET user_id = ? WHERE user_id = ?'),
+      move('UPDATE inbox SET actor = ? WHERE actor = ?'),
+      move('UPDATE push_subs SET user_id = ? WHERE user_id = ?'),
+      this.db.prepare('DELETE FROM users WHERE id = ?').bind(old),
+    ]);
+    // Live sync state still uses the old ID, so drop it and let the sockets reconnect.
+    this.leaveRoom(old);
+    this.persist();
+    this.closeSockets(old, () => true, 4002, 'renamed');
+    return json(this.meUser(await this.getUser(handle)));
+  }
+
+  async deleteAccount(me) {
+    const id = me.id;
+    const del = (sql) => this.db.prepare(sql).bind(id);
+    await this.db.batch([
+      del('DELETE FROM playlist_songs WHERE added_by = ?'),
+      del('DELETE FROM likes WHERE user_id = ? OR playlist_id IN (SELECT id FROM playlists WHERE owner = ?1)'),
+      del('DELETE FROM listens WHERE user_id = ? OR playlist_id IN (SELECT id FROM playlists WHERE owner = ?1)'),
+      del('DELETE FROM inbox WHERE user_id = ?'),
+      del('DELETE FROM credit_ledger WHERE user_id = ?'),
+      del('DELETE FROM push_subs WHERE user_id = ?'),
+      del('DELETE FROM sessions WHERE user_id = ?'),
+      del('DELETE FROM playlists WHERE owner = ?'),
+      del('DELETE FROM users WHERE id = ?'),
+    ]);
+    this.leaveRoom(id);
+    for (const [iid, inv] of this.invites) if (inv.from === id || inv.to === id) this.invites.delete(iid);
+    this.persist();
+    this.closeSockets(id, () => true, 4001, 'deleted');
+    return json({ ok: true });
+  }
+
+  async exportData(me) {
+    const all = async (sql) => (await this.db.prepare(sql).bind(me.id).all()).results;
+    const user = await this.getUser(me.id);
+    const data = {
+      exportedAt: new Date().toISOString(),
+      account: { id: user.id, name: user.name, bio: user.bio, email: user.email, credits: user.credits, createdAt: user.created_at, photo: user.avatar },
+      playlists: await this.loadPlaylists(me.id, 'WHERE p.owner = ?', me.id),
+      songsYouAddedToOthers: await all('SELECT ps.playlist_id, ps.track_id, ps.added_at FROM playlist_songs ps WHERE ps.added_by = ?'),
+      likes: await all('SELECT playlist_id, track_id, at FROM likes WHERE user_id = ?'),
+      creditHistory: await all('SELECT delta, reason, ref, at FROM credit_ledger WHERE user_id = ? ORDER BY at'),
+      listeningCredits: await all('SELECT playlist_id, track_id, at FROM listens WHERE user_id = ?'),
+      inbox: await all('SELECT kind, actor, text, at, read FROM inbox WHERE user_id = ? ORDER BY at'),
+      devices: await all('SELECT device, created_at, last_seen FROM sessions WHERE user_id = ?'),
+    };
+    return new Response(JSON.stringify(data, null, 2), {
+      headers: { 'Content-Type': 'application/json', 'Content-Disposition': `attachment; filename="aux-${me.id}.json"` },
+    });
+  }
+
+  // Closes this user's sockets whose session matches; their app reconnects or signs out by code.
+  closeSockets(uid, match, code = 4001, reason = 'signed out') {
+    for (const ws of this.ctx.getWebSockets(uid)) {
+      const { sh } = ws.deserializeAttachment() || {};
+      if (match(sh)) { try { ws.close(code, reason); } catch {} }
+    }
+  }
+
+  // ---------- inbox ----------
+  async unread(uid) {
+    return (await this.db.prepare('SELECT count(*) AS n FROM inbox WHERE user_id = ? AND read = 0').bind(uid).first()).n;
+  }
+  // Saves a note to someone's inbox. Online: a live toast. Offline: a push to their devices.
+  async notify(uid, { kind, actor, text, url }) {
+    await this.db.prepare('INSERT INTO inbox (user_id, kind, actor, text, url, at) VALUES (?, ?, ?, ?, ?, ?)').bind(uid, kind, actor, text, url, Date.now()).run();
+    if (this.isOnline(uid)) {
+      this.sendTo(uid, { type: 'inbox', unread: await this.unread(uid) });
+      this.sendTo(uid, { type: 'notice', text });
+      return;
+    }
+    const { results } = await this.db.prepare('SELECT endpoint FROM push_subs WHERE user_id = ?').bind(uid).all();
+    const work = Promise.all(results.map(async ({ endpoint }) => {
+      if (await ring(endpoint, this.env) === 'gone') await this.db.prepare('DELETE FROM push_subs WHERE endpoint = ?').bind(endpoint).run();
+    }));
+    this.ctx.waitUntil?.(work);
+  }
+
+  // ---------- songs ----------
+  // Adds one song ({source, sourceId} or {url}) or several ({tracks: [...]}) in one go.
+  async addSongs(me, playlistId, body) {
     const pl = await this.playlist(playlistId);
     if (!pl) return fail(404, 'Playlist not found.');
-    let track;
-    try {
-      track = body.url ? await this.resolveLink(body.url) : await this.resolveTrack(body.source, String(body.sourceId || ''));
-    } catch (e) { return fail(400, e.message); }
-    if (pl.songs.length >= MAX_SONGS) return fail(400, `This playlist is full (${MAX_SONGS} songs).`);
-    if (pl.songs.some((s) => s.id === track.id)) return fail(400, 'That song is already on this playlist.');
+    const space = MAX_SONGS - pl.songs.length;
+    if (space <= 0) return fail(400, `This playlist is full (${MAX_SONGS} songs).`);
+    const wanted = Array.isArray(body.tracks) ? body.tracks.slice(0, MAX_SONGS) : [body.url ? { url: body.url } : { source: body.source, sourceId: body.sourceId }];
+    const resolved = await Promise.all(wanted.map((w) => (w.url ? this.resolveLink(w.url) : this.resolveTrack(w.source, String(w.sourceId || '')))
+      .then((t) => ({ t }), (e) => ({ err: e.message }))));
+    const have = new Set(pl.songs.map((s) => s.id));
+    const tracks = [], skipped = [];
+    for (const r of resolved) {
+      if (r.err) skipped.push(r.err);
+      else if (have.has(r.t.id)) skipped.push(`"${r.t.title}" is already on this playlist.`);
+      else if (tracks.length >= space) skipped.push(`No room for "${r.t.title}".`);
+      else { have.add(r.t.id); tracks.push(r.t); }
+    }
+    if (!tracks.length) return fail(400, skipped[0] || 'Nothing to add.');
+    const n = tracks.length;
     const isOwner = pl.owner === me.id;
     const now = Date.now();
     if (!isOwner) {
       // Conditional update so a balance can't go below zero.
-      const r = await this.db.prepare('UPDATE users SET credits = credits - 1 WHERE id = ? AND credits >= 1').bind(me.id).run();
-      if (!r.meta.changes) return fail(402, 'You need 1 credit. Listen to songs other people added to earn more.');
+      const r = await this.db.prepare('UPDATE users SET credits = credits - ? WHERE id = ? AND credits >= ?').bind(n, me.id, n).run();
+      if (!r.meta.changes) return fail(402, n === 1 ? 'You need 1 credit. Listen to songs other people added to earn more.' : `You need ${n} credits and have ${me.credits}. Pick fewer songs, or listen to earn more.`);
     }
     try {
-      await this.db.batch([
+      await this.db.batch(tracks.flatMap((t, i) => [
         this.db.prepare(`INSERT INTO tracks (id, source, source_id, title, author, art, duration, license, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET title = excluded.title, author = excluded.author, art = excluded.art, license = excluded.license`)
-          .bind(track.id, track.source, track.sourceId, String(track.title).slice(0, 160), String(track.author).slice(0, 100), track.art, track.duration || null, track.license || null, now),
-        this.db.prepare('INSERT INTO playlist_songs (playlist_id, track_id, added_by, added_at) VALUES (?, ?, ?, ?)').bind(playlistId, track.id, isOwner ? null : me.id, now),
-        ...(isOwner ? [] : [this.db.prepare('INSERT INTO credit_ledger (user_id, delta, reason, ref, at) VALUES (?, -1, ?, ?, ?)').bind(me.id, 'add_song', `${playlistId}:${track.id}`, now)]),
-      ]);
-    } catch (e) {
-      if (!isOwner) await this.db.prepare('UPDATE users SET credits = credits + 1 WHERE id = ?').bind(me.id).run();
-      return fail(400, 'That song is already on this playlist.');
+          .bind(t.id, t.source, t.sourceId, String(t.title).slice(0, 160), String(t.author).slice(0, 100), t.art, t.duration || null, t.license || null, now),
+        // +i keeps the chosen order when songs are sorted by time added.
+        this.db.prepare('INSERT INTO playlist_songs (playlist_id, track_id, added_by, added_at) VALUES (?, ?, ?, ?)').bind(playlistId, t.id, isOwner ? null : me.id, now + i),
+        ...(isOwner ? [] : [this.db.prepare('INSERT INTO credit_ledger (user_id, delta, reason, ref, at) VALUES (?, -1, ?, ?, ?)').bind(me.id, 'add_song', `${playlistId}:${t.id}`, now)]),
+      ]));
+    } catch {
+      if (!isOwner) await this.db.prepare('UPDATE users SET credits = credits + ? WHERE id = ?').bind(n, me.id).run();
+      return fail(400, 'Someone just changed this playlist. Try again.');
     }
-    if (!isOwner) this.sendTo(pl.owner, { type: 'notice', text: `@${me.id} added "${track.title}" to ${pl.name}` });
+    if (!isOwner) {
+      await this.notify(pl.owner, {
+        kind: 'added', actor: me.id, url: `#p-${playlistId}`,
+        text: n === 1 ? `@${me.id} added "${tracks[0].title}" to ${pl.name}` : `@${me.id} added ${n} songs to ${pl.name}`,
+      });
+    }
     const credits = (await this.getUser(me.id)).credits;
-    return json({ playlist: await this.playlist(playlistId), credits });
+    return json({ playlist: await this.playlist(playlistId, me.id), credits, added: n, skipped });
+  }
+
+  // Like or unlike a song on a playlist. When the owner likes a song someone else added,
+  // that person earns a credit, once: good picks pay off, not just paying to get in.
+  async toggleLike(me, playlistId, trackId) {
+    const row = await this.db.prepare(`SELECT ps.added_by, p.owner, p.name, t.title FROM playlist_songs ps
+      JOIN playlists p ON p.id = ps.playlist_id JOIN tracks t ON t.id = ps.track_id WHERE ps.playlist_id = ? AND ps.track_id = ?`).bind(playlistId, trackId).first();
+    if (!row) return fail(404, 'That song is not on this playlist any more.');
+    const now = Date.now();
+    const ins = await this.db.prepare('INSERT OR IGNORE INTO likes (user_id, playlist_id, track_id, at) VALUES (?, ?, ?, ?)').bind(me.id, playlistId, trackId, now).run();
+    const liked = !!ins.meta.changes;
+    if (!liked) await this.db.prepare('DELETE FROM likes WHERE user_id = ? AND playlist_id = ? AND track_id = ?').bind(me.id, playlistId, trackId).run();
+    const adder = row.added_by;
+    if (liked && me.id === row.owner && adder && adder !== me.id) {
+      const ref = `${playlistId}:${trackId}`;
+      const r = await this.db.prepare(`INSERT INTO credit_ledger (user_id, delta, reason, ref, at)
+        SELECT ?1, 1, 'liked', ?2, ?3 WHERE NOT EXISTS (SELECT 1 FROM credit_ledger WHERE user_id = ?1 AND reason = 'liked' AND ref = ?2)`).bind(adder, ref, now).run();
+      if (r.meta.changes) {
+        await this.db.prepare('UPDATE users SET credits = credits + 1 WHERE id = ?').bind(adder).run();
+        await this.notify(adder, { kind: 'liked', actor: me.id, url: `#p-${playlistId}`, text: `@${me.id} liked "${row.title}", the song you added to ${row.name}. You earned 1 credit.` });
+      }
+    }
+    const { n } = await this.db.prepare('SELECT count(*) AS n FROM likes WHERE playlist_id = ? AND track_id = ?').bind(playlistId, trackId).first();
+    return json({ liked, likes: n });
   }
 
   // Earn a credit for listening 30s+ to a song someone else put on a playlist (once per song).
@@ -415,7 +704,7 @@ export class Hub extends DurableObject {
     if (!user) { server.accept(); server.close(4001, 'auth'); return new Response(null, { status: 101, webSocket: client }); }
     const uid = user.id;
     this.ctx.acceptWebSocket(server, [uid]);
-    server.serializeAttachment({ uid, name: user.name });
+    server.serializeAttachment({ uid, name: user.name, sh: user.session_hash });
     if (this.leaving.delete(uid)) this.persist();
     const r0 = this.userRoom(uid);
     server.send(JSON.stringify({ type: 'room', room: r0 ? this.roomOut(r0) : null }));
@@ -529,7 +818,7 @@ export class Hub extends DurableObject {
     if (m.type === 'load') {
       // The queue always comes from a stored playlist or the Discover row, never from the client.
       const pl = m.discover ? null : await this.playlist(String(m.playlistId || ''));
-      const queue = m.discover ? await this.discover() : (pl?.songs || []).map(({ addedBy, addedAt, ...t }) => t);
+      const queue = m.discover ? await this.discover() : (pl?.songs || []).map(songToTrack);
       const index = Math.max(0, Math.min(queue.length - 1, m.index | 0));
       if (!queue[index]) return;
       // A start time in the future gives every phone a moment to load before the clock starts.

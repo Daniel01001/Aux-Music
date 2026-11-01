@@ -16,7 +16,11 @@ export default {
       }] : []);
     }
     if (pathname === '/api/config') {
-      return Response.json({ googleClientId: env.GOOGLE_CLIENT_ID || null, sources: { yt: !!env.YT_API_KEY, au: true, jm: !!env.JAMENDO_CLIENT_ID } });
+      return Response.json({
+        googleClientId: env.GOOGLE_CLIENT_ID || null,
+        pushKey: env.VAPID_PRIVATE_KEY ? env.VAPID_PUBLIC_KEY || null : null,
+        sources: { yt: !!env.YT_API_KEY, au: true, jm: !!env.JAMENDO_CLIENT_ID },
+      });
     }
     if (pathname.startsWith('/api/') || pathname === '/ws') return env.HUB.get(env.HUB.idFromName('hub')).fetch(req);
     return env.ASSETS.fetch(req);

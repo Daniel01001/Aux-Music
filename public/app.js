@@ -9,7 +9,8 @@
   const srcTag = (s) => (s.source && s.source !== 'yt' ? `<span class="tag">${SOURCE_NAME[s.source]}</span> ` : '');
   const eqBars = '<span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>';
   const hue = (s) => [...String(s)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
-  const avatar = (u, size = '') => `<span class="avatar ${size} ${u?.online ? 'online' : ''}" style="--h:${hue(u?.id || '?')}">${esc((u?.name || u?.id || '?')[0])}</span>`;
+  const avatar = (u, size = '') => `<span class="avatar ${size} ${u?.online ? 'online' : ''}" style="--h:${hue(u?.id || '?')}">${u?.avatar
+    ? `<img src="${esc(u.avatar)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : esc((u?.name || u?.id || '?')[0])}</span>`;
   const fmt = (t) => { t = Math.max(0, Math.floor(t || 0)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
   const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} } };
 
@@ -66,7 +67,7 @@
   const slots = (n) => `<div class="slots" title="${n} of 10 songs">${Array.from({ length: 10 }, (_, i) => `<i class="${i < n ? 'on' : ''}"></i>`).join('')}</div>`;
 
   // ---------- router ----------
-  const routes = { home: renderHome, search: renderSearch, sync: renderSync, you: renderYou };
+  const routes = { home: renderHome, search: renderSearch, sync: renderSync, you: renderYou, inbox: renderInbox };
   async function route() {
     if (!token) return renderOnboard();
     document.body.classList.remove('no-tabs');
@@ -122,7 +123,7 @@
         <div class="sync-card" id="gCard">
           <div id="gBtn" class="g-btn"></div>
           <div class="error" id="err"></div>
-          <p class="muted small" style="margin:0">Use the Google account you listen to YouTube Music with.</p>
+          <p class="muted small" style="margin:0">Use the Google account you listen to YouTube Music with. By continuing you agree to the <a href="/terms.html" style="text-decoration:underline">Terms</a> and <a href="/privacy.html" style="text-decoration:underline">Privacy policy</a>.</p>
         </div>
       </div>`;
     try {
@@ -223,7 +224,7 @@
   const feedCard = (p) => `
     <a class="feed-card" href="#p-${p.id}">
       ${cover(p.songs)}
-      <div class="meta">${avatar({ id: p.owner, name: p.ownerName }, 'sm')}<div class="text"><div class="t">${esc(p.name)}</div><div class="s">@${esc(p.owner)}${p.sample ? ' <span class="tag">sample</span>' : ''}</div></div></div>
+      <div class="meta">${avatar({ id: p.owner, name: p.ownerName, avatar: p.ownerAvatar }, 'sm')}<div class="text"><div class="t">${esc(p.name)}</div><div class="s">@${esc(p.owner)}${p.sample ? ' <span class="tag">sample</span>' : ''}</div></div></div>
       ${slots(p.songs.length)}
     </a>`;
   const syncBanner = () => `
@@ -297,7 +298,7 @@
         <div style="min-width:0">
           <span class="tag">${p.songs.length} of 10 songs</span>
           <h1>${esc(p.name)}</h1>
-          <a class="pl-owner" href="${mine ? '#you' : `#u-${p.owner}`}">${avatar({ id: p.owner, name: p.ownerName }, 'sm')}<span>${mine ? 'You' : '@' + esc(p.owner)}</span></a>
+          <a class="pl-owner" href="${mine ? '#you' : `#u-${p.owner}`}">${avatar({ id: p.owner, name: p.ownerName, avatar: p.ownerAvatar }, 'sm')}<span>${mine ? 'You' : '@' + esc(p.owner)}</span></a>
         </div>
       </div>
       <div class="section" style="margin-top:18px">
@@ -311,7 +312,8 @@
         ${p.songs.length ? `<ol class="songs">${p.songs.map((s, i) => `
           <li class="song ${engine.state.track?.id === s.id ? 'now' : ''}" data-id="${esc(s.id)}">
             <span class="thumb-wrap" data-play="${i}"><img class="thumb" src="${art(s)}" alt="" loading="lazy">${eqBars}</span>
-            <div class="txt" data-play="${i}"><div class="st">${esc(s.title)}</div><div class="sa">${srcTag(s)}${esc(s.author)}${s.addedBy ? ` · <span class="added-by">added by @${esc(s.addedBy)}</span>` : ''}</div></div>
+            <div class="txt" data-play="${i}"><div class="st">${esc(s.title)}</div><div class="sa">${s.ownerLiked && s.addedBy ? '<span class="tag pick">Owner\'s pick</span> ' : ''}${srcTag(s)}${esc(s.author)}${s.addedBy ? ` · <span class="added-by">added by @${esc(s.addedBy)}</span>` : ''}</div></div>
+            <button class="icon-btn like" data-like="${i}" type="button" aria-pressed="${s.liked}" aria-label="Like ${esc(s.title)}"><svg><use href="#i-heart"/></svg><span class="n">${s.likes || ''}</span></button>
             ${mine
               ? `<button class="icon-btn" data-del="${esc(s.id)}" aria-label="Remove ${esc(s.title)}"><svg style="width:18px;height:18px;color:var(--muted)"><use href="#i-trash"/></svg></button>`
               : `<button class="icon-btn" data-save="${i}" aria-label="Save ${esc(s.title)} to your playlist"><svg style="width:20px;height:20px;color:var(--muted)"><use href="#i-plus"/></svg></button>`}
@@ -325,6 +327,18 @@
     $('#addSong').onclick = () => addSongSheet(p);
     $('#sharePl').onclick = () => sharePlaylist(p);
     view.querySelectorAll('[data-save]').forEach((b) => b.onclick = () => saveSong(queue[+b.dataset.save]));
+    view.querySelectorAll('[data-like]').forEach((b) => b.onclick = async () => {
+      const s = p.songs[+b.dataset.like];
+      b.disabled = true;
+      try {
+        const r = await api(`/api/playlists/${p.id}/songs/${encodeURIComponent(s.id)}/like`, { method: 'POST' });
+        Object.assign(s, { liked: r.liked, likes: r.likes });
+        b.setAttribute('aria-pressed', r.liked); b.querySelector('.n').textContent = r.likes || '';
+        // Liking someone's pick on your own playlist thanks them with a credit.
+        if (r.liked && mine && s.addedBy && !s.ownerLiked) { s.ownerLiked = true; toast(`@${s.addedBy} earned a credit for this pick.`); }
+      } catch (e) { toast(e.message); }
+      b.disabled = false;
+    });
     view.querySelectorAll('[data-del]').forEach((b) => b.onclick = async () => { await api(`/api/playlists/${p.id}/songs/${encodeURIComponent(b.dataset.del)}`, { method: 'DELETE' }); route(); });
     $('#delPl') && ($('#delPl').onclick = () => sheet(`
       <h2>Delete "${esc(p.name)}"?</h2><p class="muted" style="margin:0">Songs other people added will be gone too.</p>
@@ -332,24 +346,49 @@
     (el, close) => { $('#yesDel', el).onclick = async () => { await api(`/api/playlists/${p.id}`, { method: 'DELETE' }); close(); location.hash = 'home'; }; }));
   }
 
+  // Pick one or more songs (from search, a song link, or an album/playlist link) and add them together.
   async function addSongSheet(p) {
     const mine = p.owner === me.id;
     await loadConfig();
     // YouTube is always offered (links work without search); the others only when the server has them on.
     const sources = ['yt', 'au', 'jm'].filter((s) => s === 'yt' || config.sources?.[s]);
+    const space = 10 - p.songs.length;
+    const already = new Set(p.songs.map((s) => s.id));
+    const limit = mine ? space : Math.min(space, me.credits);
     sheet(`
       <div class="sheet-top"><h2>Add to ${esc(p.name)}</h2><button class="icon-btn" data-close aria-label="Close"><svg><use href="#i-close"/></svg></button></div>
       <div class="seg" role="tablist" aria-label="Where to search" style="--n:${sources.length}">
         ${sources.map((s) => `<button type="button" role="tab" data-src="${s}" aria-selected="false">${SOURCE_NAME[s]}</button>`).join('')}
       </div>
-      <div class="field"><label for="sq" id="sql">Search a song or paste a link</label><input class="input" id="sq" placeholder="Song or artist" autocapitalize="none" autocomplete="off"></div>
+      <div class="field"><label for="sq">Search, or paste a song, album or playlist link</label><input class="input" id="sq" placeholder="Song or artist" autocapitalize="none" autocomplete="off"></div>
       <div id="sres"></div>
       <div class="error" id="serr"></div>
-      <p class="muted small" style="margin:0" id="snote"></p>`,
+      <p class="muted small" style="margin:0" id="snote"></p>
+      <div class="sheet-foot"><button class="btn primary block" id="addSel" type="button" disabled></button></div>`,
     (el, close) => {
-      const q = $('#sq', el), out = $('#sres', el), err = $('#serr', el), note = $('#snote', el);
+      const q = $('#sq', el), out = $('#sres', el), err = $('#serr', el), note = $('#snote', el), addBtn = $('#addSel', el);
+      const picked = new Map(); // id -> song, kept while you search for more
       let source = sources.includes(store.get('aux-src')) ? store.get('aux-src') : 'yt';
-      const cost = mine ? 'Adding to your own playlist is free.' : `Costs 1 credit. You have ${me.credits}.`;
+      let shown = [];
+      const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+      const cost = mine ? 'Adding to your own playlist is free.' : `Each song costs 1 credit. You have ${me.credits}.`;
+
+      function updateFoot() {
+        const n = picked.size;
+        addBtn.disabled = !n;
+        addBtn.textContent = n ? `Add ${plural(n, 'song')}${mine ? '' : ` · ${plural(n, 'credit')}`}`
+          : !space ? 'This playlist is full' : !limit ? 'You need a credit to add songs here' : `Pick up to ${plural(limit, 'song')}`;
+        out.querySelectorAll('[data-pick]').forEach((li) => li.setAttribute('aria-checked', picked.has(shown[+li.dataset.pick]?.id)));
+      }
+      function toggle(i) {
+        const s = shown[i];
+        if (!s || already.has(s.id)) return;
+        err.textContent = '';
+        if (picked.has(s.id)) picked.delete(s.id);
+        else if (picked.size >= limit) { err.textContent = limit ? `You can add ${plural(limit, 'more song')} here.` : 'You need a credit to add songs here.'; return; }
+        else picked.set(s.id, s);
+        updateFoot();
+      }
       const setSource = (s) => {
         source = s; store.set('aux-src', s);
         el.querySelectorAll('[data-src]').forEach((b) => b.setAttribute('aria-selected', b.dataset.src === s));
@@ -358,15 +397,21 @@
       };
       el.querySelectorAll('[data-src]').forEach((b) => b.onclick = () => setSource(b.dataset.src));
       q.focus();
+
+      const isCollection = (v) => (/[?&]list=/.test(v) && !/[?&]v=/.test(v)) || /audius\.co\/[^/]+\/(album|playlist)\//.test(v);
       let t, seq = 0;
       q.oninput = () => { clearTimeout(t); t = setTimeout(lookup, 350); };
       async function lookup() {
-        err.textContent = ''; const v = q.value.trim(); if (!v) return (out.innerHTML = '');
+        err.textContent = ''; const v = q.value.trim(); if (!v) { shown = []; out.innerHTML = ''; return; }
         const mySeq = ++seq;
         try {
-          if (/^https?:\/\/|youtu\.?be|audius\.co|jamendo\.com|^[\w-]{11}$/.test(v)) {
+          if (isCollection(v)) {
+            out.innerHTML = '<p class="muted small">Opening…</p>';
+            const r = await api(`/api/collection?url=${encodeURIComponent(v)}`);
+            if (mySeq === seq) show(r.tracks, r.title);
+          } else if (/^https?:\/\/|youtu\.?be|audius\.co|jamendo\.com|^[\w-]{11}$/.test(v)) {
             const s = await api(`/api/resolve?url=${encodeURIComponent(v)}`);
-            if (mySeq === seq) show([s]);
+            if (mySeq === seq) { show([s]); if (!picked.has(s.id) && !already.has(s.id)) toggle(0); }
           } else {
             const r = await api(`/api/search?source=${source}&q=${encodeURIComponent(v)}`);
             if (mySeq !== seq) return;
@@ -376,18 +421,42 @@
           }
         } catch (e) { if (mySeq === seq) { out.innerHTML = ''; err.textContent = e.message; } }
       }
-      function show(list) {
-        out.innerHTML = `<ul class="results">${list.map((s, i) => `<li><img src="${art(s)}" alt=""><div style="min-width:0"><div class="pm-title">${esc(s.title)}</div><div class="pm-sub">${s.official ? '<span class="tag">Song</span> ' : ''}${srcTag(s)}${esc(s.author)}</div></div><button class="btn primary" data-add="${i}" type="button" style="height:36px;padding:0 14px">Add</button></li>`).join('')}</ul>`;
-        out.querySelectorAll('[data-add]').forEach((b) => b.onclick = async () => {
-          b.disabled = true;
-          try {
-            const s = list[+b.dataset.add];
-            const r = await api(`/api/playlists/${p.id}/songs`, { method: 'POST', body: { source: s.source, sourceId: s.sourceId } });
-            setCredits(r.credits); close(); toast(mine ? 'Added.' : `Added to @${p.owner}'s playlist. 1 credit spent.`); route();
-          } catch (e) { err.textContent = e.message; b.disabled = false; }
+      function show(list, heading) {
+        shown = list;
+        const fresh = list.filter((s) => !already.has(s.id));
+        const firstN = Math.min(limit - picked.size, fresh.length);
+        out.innerHTML = `
+          ${heading ? `<div class="res-head"><div style="min-width:0"><b>${esc(heading)}</b><div class="small muted">${plural(list.length, 'song')}. Pick the ones you want.</div></div>${firstN > 0 ? `<button class="link-btn" id="pickFirst" type="button">Pick first ${firstN}</button>` : ''}</div>` : ''}
+          <ul class="results">${list.map((s, i) => {
+            const here = already.has(s.id);
+            return `<li class="pickable" data-pick="${i}" role="checkbox" tabindex="0" aria-checked="false" ${here ? 'aria-disabled="true"' : ''}>
+              <img src="${art(s)}" alt=""><div style="min-width:0"><div class="pm-title">${esc(s.title)}</div><div class="pm-sub">${s.official ? '<span class="tag">Song</span> ' : ''}${srcTag(s)}${esc(s.author)}${here ? ' · already here' : ''}</div></div>
+              <span class="check" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>`;
+          }).join('')}</ul>`;
+        out.querySelectorAll('[data-pick]').forEach((li) => {
+          li.onclick = () => toggle(+li.dataset.pick);
+          li.onkeydown = (e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggle(+li.dataset.pick); } };
         });
+        $('#pickFirst', el) && ($('#pickFirst', el).onclick = () => {
+          for (let i = 0; i < list.length && picked.size < limit; i++) if (!already.has(list[i].id)) picked.set(list[i].id, list[i]);
+          updateFoot();
+        });
+        updateFoot();
       }
+
+      addBtn.onclick = async () => {
+        addBtn.disabled = true; err.textContent = '';
+        try {
+          const tracks = [...picked.values()].map((s) => ({ source: s.source, sourceId: s.sourceId }));
+          const r = await api(`/api/playlists/${p.id}/songs`, { method: 'POST', body: { tracks } });
+          setCredits(r.credits); close();
+          const spent = mine ? '' : ` ${plural(r.added, 'credit')} spent.`;
+          toast(`Added ${plural(r.added, 'song')}.${spent}${r.skipped?.length ? ` ${plural(r.skipped.length, 'song')} skipped: ${r.skipped[0]}` : ''}`);
+          route();
+        } catch (e) { err.textContent = e.message; updateFoot(); }
+      };
       setSource(source);
+      updateFoot();
     });
   }
 
@@ -465,26 +534,176 @@
   function invite(id) { send({ type: 'invite', to: id.toLowerCase() }); toast(`Invite sent to @${id}. Waiting for them to accept.`); }
 
   // ---------- you ----------
+  const ago = (t) => {
+    const s = Math.max(1, (Date.now() - t) / 1000);
+    if (s < 60) return 'just now';
+    if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+    if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+    if (s < 7 * 86400) return `${Math.floor(s / 86400)} d ago`;
+    return new Date(t).toLocaleDateString();
+  };
+  function paintMeAvatar() {
+    const a = $('#meAvatar');
+    a.style.setProperty('--h', hue(me.id));
+    a.innerHTML = me.avatar ? `<img src="${esc(me.avatar)}" alt="" referrerpolicy="no-referrer">` : esc(me.name[0]);
+  }
+  function setUnread(n) {
+    $('#inboxDot').classList.toggle('hidden', !n);
+    $('#inboxBtn').setAttribute('aria-label', n ? `Inbox, ${n} new` : 'Inbox');
+  }
+
   async function renderYou() {
-    me = await api('/api/me'); setCredits(me.credits);
+    me = await api('/api/me'); setCredits(me.credits); setUnread(me.unread); paintMeAvatar();
+    await loadConfig();
     view.innerHTML = `
-      <section class="section" style="margin-top:8px;display:flex;gap:16px;align-items:center">
-        ${avatar(me, 'lg')}<div><h1 style="font-size:26px">${esc(me.name)}</h1><div class="muted">@${esc(me.id)}</div></div>
+      <section class="section profile">
+        ${avatar(me, 'lg')}
+        <div class="who"><h1>${esc(me.name)}</h1><div class="muted">@${esc(me.id)}</div>${me.bio ? `<p class="bio">${esc(me.bio)}</p>` : ''}</div>
+        <button class="btn" id="editMe" type="button">Edit</button>
       </section>
       <section class="section">
         <div class="sync-card" style="flex-direction:row;align-items:center;gap:16px">
           <div style="font-family:var(--font-display);font-size:40px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums">${me.credits}</div>
-          <div class="small muted">credits. Adding a song to someone else's playlist costs 1. Listen for 30 seconds to a song someone else added to earn 1 back.</div>
+          <div class="small muted">credits. Adding a song to someone else's playlist costs 1. Earn them back by listening 30 seconds to songs others added, or when an owner likes a song you added.</div>
+        </div>
+      </section>
+      <section class="section"><div class="section-head"><h2>Notifications</h2></div>
+        <div class="setting-row">
+          <div><div class="n">Push notifications</div><div class="small muted" id="pushHint">When someone adds a song to your playlist or likes a song you added.</div></div>
+          <button class="toggle" id="pushT" type="button" role="switch" aria-checked="false" aria-label="Push notifications" disabled><span></span></button>
         </div>
       </section>
       <section class="section"><div class="section-head"><h2>Theme</h2></div>
         <div class="themes">${THEMES.map((t) => `<button class="swatch" type="button" data-theme-id="${t.id}" aria-pressed="${document.documentElement.dataset.theme === t.id}"><span class="sw" style="background:${t.bg};--a:${t.a};${t.id === 'paper' ? 'border:1px solid #ddd' : ''}"></span>${t.name}</button>`).join('')}</div>
       </section>
       <section class="section"><div class="section-head"><h2>Share your ID</h2></div><p class="muted" style="margin:0 0 10px">Friends search <b style="color:var(--text)">@${esc(me.id)}</b> to add songs to your playlists or sync with you.</p></section>
-      <section class="section"><button class="btn" id="signOut" type="button">Sign out of this device</button></section>`;
+      <section class="section"><div class="section-head"><h2>Devices</h2><button class="link-btn" id="outOthers" type="button" hidden>Sign out of the others</button></div><ul class="people" id="devs"><li class="muted small">Loading…</li></ul></section>
+      <section class="section"><div class="section-head"><h2>Account</h2></div>
+        ${me.email ? `<p class="small muted" style="margin:0 0 12px">Signed in with Google as ${esc(me.email)}</p>` : ''}
+        <div class="row-actions"><button class="btn" id="signOut" type="button">Sign out</button><button class="btn" id="exportMe" type="button">Download my data</button></div>
+        <button class="link-btn" id="delMe" type="button" style="color:var(--bad);margin-top:18px">Delete my account</button>
+      </section>
+      <p class="section small muted legal"><a href="/privacy.html">Privacy policy</a> · <a href="/terms.html">Terms</a></p>`;
     view.querySelectorAll('[data-theme-id]').forEach((b) => b.onclick = () => { setTheme(b.dataset.themeId); view.querySelectorAll('[data-theme-id]').forEach((x) => x.setAttribute('aria-pressed', x === b)); });
     $('#signOut').onclick = signOut;
+    $('#editMe').onclick = editProfile;
+    $('#exportMe').onclick = exportData;
+    $('#delMe').onclick = deleteAccount;
+    loadDevices();
+    setupPushToggle();
   }
+
+  function editProfile() {
+    const canHandle = Date.now() >= me.canChangeHandleAt;
+    sheet(`
+      <div class="sheet-top"><h2>Edit profile</h2><button class="icon-btn" data-close aria-label="Close"><svg><use href="#i-close"/></svg></button></div>
+      <form id="pf" class="form-stack" novalidate>
+        ${me.hasGooglePhoto ? `<label class="setting-row"><span class="n">Show my Google photo</span><input type="checkbox" id="pfPhoto" class="checkbox" ${me.avatar ? 'checked' : ''}></label>` : ''}
+        <div class="field"><label for="pfName">Name</label><input class="input" id="pfName" maxlength="30" value="${esc(me.name)}" autocomplete="nickname"></div>
+        <div class="field"><label for="pfBio">About you</label><textarea class="input textarea" id="pfBio" maxlength="160" rows="3" placeholder="What do you listen to?">${esc(me.bio || '')}</textarea></div>
+        <div class="field"><label for="pfHandle">Your ID</label><div class="input-wrap"><span class="prefix">@</span><input class="input" id="pfHandle" maxlength="20" value="${esc(me.id)}" autocapitalize="none" spellcheck="false" ${canHandle ? '' : 'disabled'}></div>
+          <div class="small muted">${canHandle ? 'Friends find you by this. You can change it once every 30 days.' : `You can change it again on ${new Date(me.canChangeHandleAt).toDateString()}.`}</div></div>
+        <div class="error" id="pfErr"></div>
+        <button class="btn primary block" type="submit">Save</button>
+      </form>`,
+    (el, close) => {
+      $('#pf', el).onsubmit = async (e) => {
+        e.preventDefault();
+        const btn = e.target.querySelector('[type=submit]'); btn.disabled = true;
+        try {
+          const photo = $('#pfPhoto', el);
+          me = { ...me, ...(await api('/api/me', { method: 'PATCH', body: { name: $('#pfName', el).value, bio: $('#pfBio', el).value, ...(photo ? { photo: photo.checked } : {}) } })) };
+          const handle = $('#pfHandle', el).value.trim().toLowerCase().replace(/^@/, '');
+          if (canHandle && handle && handle !== me.id) me = { ...me, ...(await api('/api/me/handle', { method: 'POST', body: { handle } })) };
+          paintMeAvatar(); close(); toast('Profile saved.'); route();
+        } catch (err) { $('#pfErr', el).textContent = err.message; btn.disabled = false; }
+      };
+    });
+  }
+
+  async function loadDevices() {
+    const list = await api('/api/sessions').catch(() => []);
+    const ul = $('#devs'); if (!ul) return;
+    ul.innerHTML = list.map((d) => `
+      <li class="person"><span class="dev-icon" aria-hidden="true"><svg><use href="#i-device"/></svg></span>
+        <div class="who"><div class="n">${esc(d.device)}</div><div class="h">${d.current ? 'This device' : `Last active ${ago(d.lastSeen)}`}</div></div>
+        ${d.current ? '' : `<button class="btn" data-dev="${d.id}" type="button" style="height:36px;padding:0 14px">Sign out</button>`}
+      </li>`).join('');
+    $('#outOthers').hidden = list.filter((d) => !d.current).length < 2;
+    ul.querySelectorAll('[data-dev]').forEach((b) => b.onclick = async () => { await api(`/api/sessions/${b.dataset.dev}`, { method: 'DELETE' }); toast('Signed out of that device.'); loadDevices(); });
+    $('#outOthers').onclick = async () => { await api('/api/sessions/others', { method: 'POST' }); toast('Signed out of your other devices.'); loadDevices(); };
+  }
+
+  async function exportData() {
+    const r = await fetch('/api/me/export', { headers: { Authorization: `Bearer ${token}` } });
+    if (!r.ok) return toast("Couldn't prepare your data. Try again.");
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(await r.blob()), download: `aux-${me.id}.json` });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+
+  function deleteAccount() {
+    sheet(`
+      <h2>Delete your account?</h2>
+      <p class="muted" style="margin:0">This removes your profile, your playlists, the songs you added to other people's playlists, your likes and your credits. It can't be undone.</p>
+      <div class="field"><label for="delQ">Type <b style="color:var(--text)">@${esc(me.id)}</b> to confirm</label><input class="input" id="delQ" autocapitalize="none" autocomplete="off" spellcheck="false"></div>
+      <div class="error" id="delErr"></div>
+      <div class="row-actions"><button class="btn" data-close type="button" style="flex:1">Keep it</button><button class="btn danger" id="yesDelMe" type="button" style="flex:1" disabled>Delete forever</button></div>`,
+    (el, close) => {
+      const q = $('#delQ', el), b = $('#yesDelMe', el);
+      q.oninput = () => { b.disabled = q.value.trim().replace(/^@/, '').toLowerCase() !== me.id; };
+      b.onclick = async () => {
+        b.disabled = true;
+        try { await api('/api/me', { method: 'DELETE' }); close(); signOut(); toast('Your account has been deleted.'); }
+        catch (e) { $('#delErr', el).textContent = e.message; b.disabled = false; }
+      };
+    });
+  }
+
+  // ---------- push notifications ----------
+  const b64ToBytes = (s) => Uint8Array.from(atob((s + '='.repeat((4 - s.length % 4) % 4)).replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+  async function setupPushToggle() {
+    const t = $('#pushT'), hint = $('#pushHint');
+    if (!config.pushKey) { hint.textContent = 'Not available yet.'; return; }
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      hint.textContent = /iPhone|iPad/.test(navigator.userAgent) ? 'On iPhone, add Aux to your Home Screen first (Share, then Add to Home Screen), then open it from there.' : "This browser doesn't support notifications.";
+      return;
+    }
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    const paint = () => t.setAttribute('aria-checked', !!sub);
+    paint(); t.disabled = false;
+    t.onclick = async () => {
+      t.disabled = true;
+      try {
+        if (sub) {
+          await api('/api/push/unsubscribe', { method: 'POST', body: { endpoint: sub.endpoint } }).catch(() => {});
+          await sub.unsubscribe(); sub = null;
+        } else {
+          if (await Notification.requestPermission() !== 'granted') { hint.textContent = 'Notifications are blocked. Allow them for this site in your browser settings.'; return; }
+          sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(config.pushKey) });
+          await api('/api/push/subscribe', { method: 'POST', body: { endpoint: sub.endpoint } });
+          toast("Notifications are on for this device.");
+        }
+      } catch { toast("Couldn't change notifications. Try again."); }
+      finally { paint(); t.disabled = false; }
+    };
+  }
+
+  // ---------- inbox ----------
+  async function renderInbox() {
+    const { items } = await api('/api/inbox');
+    view.innerHTML = `
+      <button class="back" type="button" data-back><svg><use href="#i-back"/></svg>Back</button>
+      <section class="section" style="margin-top:8px"><h1 style="margin-bottom:14px">Inbox</h1>
+        ${items.length ? `<ul class="inbox">${items.map((i) => `
+          <li class="${i.read ? '' : 'unread'}"><a href="${esc(i.url || '#home')}">${avatar({ id: i.actor || 'aux', name: i.actor || 'a' }, 'sm')}
+            <div style="min-width:0"><div class="txt">${esc(i.text)}</div><div class="small muted">${ago(i.at)}</div></div></a></li>`).join('')}</ul>`
+        : `<div class="empty-state"><h3>Nothing yet</h3><p>When someone adds a song to your playlist or likes a song you added, it shows up here.</p></div>`}
+      </section>`;
+    if (items.some((i) => !i.read)) api('/api/inbox/read', { method: 'POST' }).then(() => setUnread(0)).catch(() => {});
+  }
+
   function signOut() { store.set('aux-token', null); token = null; me = null; try { ws?.close(); } catch {} location.hash = ''; route(); }
 
   // =====================================================================
@@ -723,7 +942,11 @@
     ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?token=${encodeURIComponent(token)}`);
     ws.onopen = () => { wsRetry = 0; bestRtt = Infinity; for (let i = 0; i < 5; i++) setTimeout(ping, i * 250); };
     ws.onmessage = (e) => onMsg(JSON.parse(e.data));
-    ws.onclose = (e) => { if (e.code === 4001) return signOut(); if (token) setTimeout(connect, Math.min(8000, 500 * 2 ** wsRetry++)); };
+    ws.onclose = (e) => {
+      if (e.code === 4001) return signOut();
+      if (e.code === 4002) { api('/api/me').then((u) => { me = u; paintMeAvatar(); }).catch(() => {}); return connect(); } // your @ID changed
+      if (token) setTimeout(connect, Math.min(8000, 500 * 2 ** wsRetry++));
+    };
   }
   function send(m) { if (ws?.readyState === 1) ws.send(JSON.stringify(m)); else toast("You're offline. Reconnecting…"); }
   function ping() { send({ type: 'ping', t: Date.now() }); }
@@ -739,6 +962,7 @@
     if (m.type === 'invite') { pendingInvites.push(m); showInvite(); return; }
     if (m.type === 'invite-expired') { pendingInvites = pendingInvites.filter((i) => i.id !== m.id); $('#modalRoot').innerHTML = ''; showInvite(); return; }
     if (m.type === 'notice' || m.type === 'error') return toast(m.text);
+    if (m.type === 'inbox') return setUnread(m.unread);
     if (m.type === 'room') {
       const was = room; room = m.room;
       $('#syncBadge').classList.toggle('hidden', !room);
@@ -780,7 +1004,7 @@
     if (!token) return route();
     try { me = await api('/api/me'); } catch { return; }
     setCredits(me.credits);
-    const a = $('#meAvatar'); a.style.setProperty('--h', hue(me.id)); a.textContent = me.name[0];
+    paintMeAvatar(); setUnread(me.unread);
     connect();
     if (!location.hash) location.hash = 'home'; else route();
   }
