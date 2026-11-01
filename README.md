@@ -22,6 +22,8 @@ Home has a **Fresh finds** row of trending Audius (and Jamendo) songs, which the
 - **Account:** edit name, bio and photo; change your @ID (once every 30 days); see devices and sign them out; download your data; delete your account.
 - **Profile photos:** upload from the Edit profile sheet. The app crops a 400 px square before sending; the server checks the file really is an image and stores it in the R2 bucket `aux-media`, served at `/media/...`.
 - **Parties:** start one on the Sync page (public or invite-only). Public parties are listed under Live parties and anyone with the link (`/#join-CODE`) can join; they stay open while anyone is in them. Invite syncs still work as before.
+- **Party roles:** in a party only the host and the DJs they pick control playback. Everyone else taps **Request a song**; the host or a DJ chooses **Play next**, **Now** or declines. A DJ's own picks go straight in as the next song. Each listener can have 3 requests waiting. Two-person invite syncs keep everyone in control.
+- **Mood:** a short "what's on your mind" line (80 characters) and an optional mood song, shown under the profile picture and in people search. Visitors can play the song, or request it in a party.
 - **Live lyrics:** a Lyrics button in the full player shows lyrics from LRCLIB (free, community-written, not licensed). Lines light up in time with the shared clock, so everyone in a party sees the same line, and tapping a line jumps there. Set the `LYRICS` variable to `off` to switch lyrics off at once if a rights holder asks.
 - **Legal pages:** `/privacy` and `/terms`.
 

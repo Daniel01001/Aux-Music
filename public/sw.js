@@ -1,6 +1,6 @@
 // Aux service worker: caches the app shell so the app opens offline-ish and installs as a PWA.
 // API calls, the socket and anything from YouTube or Google always go to the network.
-const CACHE = 'aux-shell-v8'; // bump when index.html and app.js change together
+const CACHE = 'aux-shell-v9'; // bump when index.html and app.js change together
 const SHELL = ['/', '/styles.css', '/app.js', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {

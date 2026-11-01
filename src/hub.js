@@ -149,7 +149,21 @@ export class Hub extends DurableObject {
 
   // ---------- users ----------
   isOnline(uid) { return this.ctx.getWebSockets(uid).length > 0; }
-  publicUser(u) { return u && { id: u.id, name: u.name, sample: !!u.sample, online: this.isOnline(u.id), avatar: u.avatar || null, bio: u.bio || '' }; }
+  publicUser(u) {
+    return u && { id: u.id, name: u.name, sample: !!u.sample, online: this.isOnline(u.id), avatar: u.avatar || null, bio: u.bio || '',
+      mood: u.mood || '', moodAt: u.mood_at || null };
+  }
+  // The song someone picked for their mood, if any.
+  async moodTrack(u) {
+    if (!u?.mood_track) return null;
+    const t = await this.db.prepare('SELECT * FROM tracks WHERE id = ?').bind(u.mood_track).first();
+    return t ? trackOut(t) : null;
+  }
+  trackUpsert(t, now = Date.now()) {
+    return this.db.prepare(`INSERT INTO tracks (id, source, source_id, title, author, art, duration, license, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET title = excluded.title, author = excluded.author, art = excluded.art, license = excluded.license`)
+      .bind(t.id, t.source, t.sourceId, String(t.title).slice(0, 160), String(t.author).slice(0, 100), t.art, t.duration || null, t.license || null, now);
+  }
   meUser(u) {
     return { ...this.publicUser(u), credits: u.credits, email: u.email || null, hasGooglePhoto: !!u.google_picture,
       canChangeHandleAt: (u.handle_changed_at || 0) + HANDLE_COOLDOWN };
@@ -403,16 +417,33 @@ export class Hub extends DurableObject {
     // ----- account -----
     if (m === 'GET' && path === '/api/me') {
       await this.db.prepare('UPDATE sessions SET last_seen = ?, device = coalesce(device, ?) WHERE token_hash = ?').bind(Date.now(), device, me.session_hash).run();
-      return json({ ...this.meUser(me), unread: await this.unread(me.id) });
+      return json({ ...this.meUser(me), moodTrack: await this.moodTrack(me), unread: await this.unread(me.id) });
     }
     if (m === 'PATCH' && path === '/api/me') {
       const name = body.name === undefined ? me.name : cleanName(body.name);
       if (!name) return fail(400, 'Add a display name.');
       const bio = body.bio === undefined ? me.bio : String(body.bio || '').trim().slice(0, 160);
       const avatar = body.photo === undefined ? me.avatar : (body.photo ? me.google_picture : null);
-      await this.db.prepare('UPDATE users SET name = ?, bio = ?, avatar = ? WHERE id = ?').bind(name, bio || null, avatar || null, me.id).run();
+      // Mood: a short line and an optional song. Sending either one refreshes the "x ago" time.
+      let mood = me.mood, moodTrack = me.mood_track, moodAt = me.mood_at;
+      const stmts = [];
+      if (body.mood !== undefined || body.moodTrack !== undefined) {
+        if (body.mood !== undefined) mood = String(body.mood || '').replace(/\s+/g, ' ').trim().slice(0, 80) || null;
+        if (body.moodTrack === null) moodTrack = null;
+        else if (body.moodTrack) {
+          let t;
+          try { t = await this.resolveTrack(String(body.moodTrack.source), String(body.moodTrack.sourceId || '')); } catch (e) { return fail(400, e.message); }
+          stmts.push(this.trackUpsert(t));
+          moodTrack = t.id;
+        }
+        moodAt = mood || moodTrack ? Date.now() : null;
+      }
+      stmts.push(this.db.prepare('UPDATE users SET name = ?, bio = ?, avatar = ?, mood = ?, mood_track = ?, mood_at = ? WHERE id = ?')
+        .bind(name, bio || null, avatar || null, mood || null, moodTrack || null, moodAt || null, me.id));
+      await this.db.batch(stmts);
       if (avatar !== me.avatar) await this.dropUpload(me.avatar);
-      return json(this.meUser(await this.getUser(me.id)));
+      const u = await this.getUser(me.id);
+      return json({ ...this.meUser(u), moodTrack: await this.moodTrack(u) });
     }
     if (m === 'POST' && path === '/api/me/handle') return this.changeHandle(me, body.handle);
     if (m === 'DELETE' && path === '/api/me') return this.deleteAccount(me);
@@ -472,7 +503,7 @@ export class Hub extends DurableObject {
     if (m === 'GET' && p) {
       const u = await this.getUser(p[1]);
       if (!u) return fail(404, 'No one has that ID.');
-      return json({ user: this.publicUser(u), playlists: await this.loadPlaylists(me.id, 'WHERE p.owner = ?', u.id) });
+      return json({ user: { ...this.publicUser(u), moodTrack: await this.moodTrack(u) }, playlists: await this.loadPlaylists(me.id, 'WHERE p.owner = ?', u.id) });
     }
 
     if (m === 'POST' && path === '/api/playlists') {
@@ -601,8 +632,8 @@ export class Hub extends DurableObject {
     // One transaction: copy the user to the new ID, repoint everything, then remove the old row.
     await this.db.batch([
       this.db.prepare('UPDATE users SET google_sub = NULL WHERE id = ?').bind(old),
-      this.db.prepare(`INSERT INTO users (id, name, credits, google_sub, email, sample, created_at, bio, avatar, google_picture, handle_changed_at)
-        VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`).bind(handle, u.name, u.credits, u.google_sub, u.email, u.created_at, u.bio, u.avatar, u.google_picture, Date.now()),
+      this.db.prepare(`INSERT INTO users (id, name, credits, google_sub, email, sample, created_at, bio, avatar, google_picture, handle_changed_at, mood, mood_track, mood_at)
+        VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(handle, u.name, u.credits, u.google_sub, u.email, u.created_at, u.bio, u.avatar, u.google_picture, Date.now(), u.mood, u.mood_track, u.mood_at),
       move('UPDATE sessions SET user_id = ? WHERE user_id = ?'),
       move('UPDATE playlists SET owner = ? WHERE owner = ?'),
       move('UPDATE playlist_songs SET added_by = ? WHERE added_by = ?'),
@@ -626,7 +657,7 @@ export class Hub extends DurableObject {
   // store it under a random name, and point the profile at it.
   async photo(req, m) {
     const me = await this.userByToken((req.headers.get('Authorization') || '').replace('Bearer ', ''));
-    if (!me) return fail(401, 'Sign in again.');
+    if (!me) { await req.arrayBuffer().catch(() => {}); return fail(401, 'Sign in again.'); } // finish reading the upload before answering
     if (m === 'DELETE') {
       await this.db.prepare('UPDATE users SET avatar = NULL WHERE id = ?').bind(me.id).run();
       await this.dropUpload(me.avatar);
@@ -675,7 +706,7 @@ export class Hub extends DurableObject {
     const user = await this.getUser(me.id);
     const data = {
       exportedAt: new Date().toISOString(),
-      account: { id: user.id, name: user.name, bio: user.bio, email: user.email, credits: user.credits, createdAt: user.created_at, photo: user.avatar },
+      account: { id: user.id, name: user.name, bio: user.bio, mood: user.mood, moodSong: user.mood_track, email: user.email, credits: user.credits, createdAt: user.created_at, photo: user.avatar },
       playlists: await this.loadPlaylists(me.id, 'WHERE p.owner = ?', me.id),
       songsYouAddedToOthers: await all('SELECT ps.playlist_id, ps.track_id, ps.added_at FROM playlist_songs ps WHERE ps.added_by = ?'),
       likes: await all('SELECT playlist_id, track_id, at FROM likes WHERE user_id = ?'),
@@ -745,9 +776,7 @@ export class Hub extends DurableObject {
     }
     try {
       await this.db.batch(tracks.flatMap((t, i) => [
-        this.db.prepare(`INSERT INTO tracks (id, source, source_id, title, author, art, duration, license, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(id) DO UPDATE SET title = excluded.title, author = excluded.author, art = excluded.art, license = excluded.license`)
-          .bind(t.id, t.source, t.sourceId, String(t.title).slice(0, 160), String(t.author).slice(0, 100), t.art, t.duration || null, t.license || null, now),
+        this.trackUpsert(t, now),
         // +i keeps the chosen order when songs are sorted by time added.
         this.db.prepare('INSERT INTO playlist_songs (playlist_id, track_id, added_by, added_at) VALUES (?, ?, ?, ?)').bind(playlistId, t.id, isOwner ? null : me.id, now + i),
         ...(isOwner ? [] : [this.db.prepare('INSERT INTO credit_ledger (user_id, delta, reason, ref, at) VALUES (?, -1, ?, ?, ?)').bind(me.id, 'add_song', `${playlistId}:${t.id}`, now)]),
@@ -839,6 +868,22 @@ export class Hub extends DurableObject {
     this.rooms.set(r.id, r);
     return r;
   }
+  // In an invite sync everyone controls the music; in a party, only the host and their DJs.
+  canControl(room, uid) {
+    return !room.party || room.host === uid || (room.djs || []).includes(uid);
+  }
+  // Adds a song to the party queue: right after the current one, or straight away.
+  enqueue(room, track, when = 'next') {
+    const st = room.state;
+    const startAt = Date.now() + 1500;
+    if (!st.track || !st.queue.length) {
+      Object.assign(st, { queue: [track], index: 0, playlistId: null, track, playing: true, position: 0, ref: startAt, heldBy: null });
+      return;
+    }
+    st.queue.splice(st.index + 1, 0, track);
+    if (st.queue.length > 100) st.queue.length = 100;
+    if (when === 'now') Object.assign(st, { index: st.index + 1, track, playing: true, position: 0, ref: startAt, heldBy: null });
+  }
   // Puts someone into a room (leaving any other), with the chat so far.
   joinRoom(r, uid, name) {
     this.leaveRoom(uid);
@@ -863,6 +908,7 @@ export class Hub extends DurableObject {
   roomOut(room) {
     return {
       id: room.id, host: room.host, code: room.code, name: room.name, public: !!room.public, party: !!room.party,
+      djs: room.djs || [], requests: room.requests || [],
       members: [...room.members].map((id) => ({ id, name: room.names[id] || id, online: this.isOnline(id) })),
       pending: [...room.pending], state: room.state, serverTime: Date.now(),
     };
@@ -879,6 +925,8 @@ export class Hub extends DurableObject {
     const r = this.userRoom(uid);
     if (!r) return;
     r.members.delete(uid);
+    r.djs = (r.djs || []).filter((d) => d !== uid);
+    r.requests = (r.requests || []).filter((q) => q.from !== uid);
     this.sendTo(uid, { type: 'room', room: null });
     if (r.members.size === 0) { this.rooms.delete(r.id); return; }
     if (r.host === uid) r.host = [...r.members][0];
@@ -1013,6 +1061,62 @@ export class Hub extends DurableObject {
       if (!REACTIONS.has(m.kind) || this.flooding(uid, 'react', 4, 3000)) return;
       for (const id of room.members) this.sendTo(id, { type: 'react', kind: m.kind, from: uid });
       return;
+    }
+
+    // ----- who controls the music in a party -----
+    // Host gives or takes DJ rights. DJs control playback freely, like the host.
+    if (m.type === 'dj') {
+      if (room.host !== uid) return err('Only the host can choose DJs.');
+      const to = cleanHandle(m.to);
+      if (!room.members.has(to) || to === room.host) return;
+      room.djs = (room.djs || []).filter((d) => d !== to);
+      if (m.on) room.djs.push(to);
+      this.roomSay(room, m.on ? `@${to} is now a DJ and can play music freely` : `@${to} is no longer a DJ`);
+      this.broadcastRoom(room);
+      return this.persist();
+    }
+    // A listener asks for a song; the host or a DJ approves it. DJs' own picks skip the queue for approval.
+    if (m.type === 'request') {
+      const reqs = (room.requests ||= []);
+      if (reqs.filter((r) => r.from === uid).length >= 3) return err('You have 3 requests waiting. Give the host a moment.');
+      if (reqs.length >= 20 || this.flooding(uid, 'request', 5, 60_000)) return err('Too many requests right now. Try again in a minute.');
+      let track;
+      try { track = publicTrack(await this.resolveTrack(String(m.source), String(m.sourceId || ''))); } catch (e) { return err(e.message); }
+      if (!this.rooms.has(room.id) || !room.members.has(uid)) return; // they left while we looked it up
+      // Check again: other requests may have landed while we were looking this one up.
+      if (!this.canControl(room, uid) && (reqs.filter((r) => r.from === uid).length >= 3 || reqs.length >= 20)) return err('You have 3 requests waiting. Give the host a moment.');
+      if (this.canControl(room, uid)) {
+        this.enqueue(room, { ...track, requestedBy: uid }, m.now ? 'now' : 'next');
+        this.roomSay(room, `@${uid} ${m.now ? 'played' : 'queued'} "${track.title}"`);
+      } else {
+        const req = { id: randomHex(4), from: uid, track, at: Date.now() };
+        reqs.push(req);
+        this.roomSay(room, `@${uid} requested "${track.title}"`);
+        for (const id of room.members) if (this.canControl(room, id)) this.sendTo(id, { type: 'notice', text: `@${uid} requested "${track.title}". Approve it in the party.` });
+      }
+      this.broadcastRoom(room);
+      return this.persist();
+    }
+    if (m.type === 'approve' || m.type === 'decline') {
+      if (!this.canControl(room, uid)) return err('Only the host and DJs can approve requests.');
+      const i = (room.requests || []).findIndex((r) => r.id === m.id);
+      if (i < 0) return;
+      const [req] = room.requests.splice(i, 1);
+      if (m.type === 'approve') {
+        this.enqueue(room, { ...req.track, requestedBy: req.from }, m.now ? 'now' : 'next');
+        this.roomSay(room, `@${uid} ${m.now ? 'played' : 'queued'} @${req.from}'s request "${req.track.title}"`);
+      } else {
+        this.sendTo(req.from, { type: 'notice', text: `Your request "${req.track.title}" wasn't picked this time.` });
+      }
+      this.broadcastRoom(room);
+      return this.persist();
+    }
+
+    // Playback changes need control rights in a party. When a song ends, every phone reports it;
+    // only the host's and DJs' reports move the party on.
+    if (['load', 'pause', 'resume', 'seek', 'next', 'prev'].includes(m.type) && !this.canControl(room, uid)) {
+      if (m.type === 'next' && Number.isInteger(m.from)) return;
+      return err('Only the host and DJs control the music here. Request a song instead.');
     }
     if (m.type === 'load') {
       // The queue always comes from a stored playlist or the Discover row, never from the client.

@@ -309,7 +309,7 @@
       </div>
       <div class="section" style="margin-top:18px">
         <div class="row-actions">
-          <button class="btn primary" id="playAll" ${p.songs.length ? '' : 'disabled'} type="button"><svg><use href="#i-play"/></svg>${room ? 'Play for the sync' : 'Play'}</button>
+          <button class="btn primary" id="playAll" ${p.songs.length ? '' : 'disabled'} type="button"><svg><use href="#i-play"/></svg>${!room ? 'Play' : canControl() ? (room.party ? 'Play for the party' : 'Play for the sync') : 'Request the first song'}</button>
           <button class="btn" id="addSong" ${full ? 'disabled' : ''} type="button"><svg><use href="#i-plus"/></svg>${full ? 'Full' : mine ? 'Add a song' : 'Add a song · 1 credit'}</button>
           <button class="btn icon-only" id="sharePl" type="button" aria-label="Share this playlist"><svg><use href="#i-share"/></svg></button>
         </div>
@@ -485,7 +485,7 @@
   }
   const personRow = (u) => `
     <li class="person">
-      <a href="#u-${esc(u.id)}" style="display:contents">${avatar(u)}<div class="who"><div class="n">${esc(u.name)}${u.sample ? ' <span class="tag">sample</span>' : ''}</div><div class="h">@${esc(u.id)}${u.online ? ' · online' : ''}</div></div></a>
+      <a href="#u-${esc(u.id)}" style="display:contents">${avatar(u)}<div class="who"><div class="n">${esc(u.name)}${u.sample ? ' <span class="tag">sample</span>' : ''}</div><div class="h">@${esc(u.id)}${u.online ? ' · online' : ''}</div>${u.mood ? `<div class="h mood-line">${esc(u.mood)}</div>` : ''}</div></a>
       ${u.sample ? '' : `<button class="btn" data-sync="${esc(u.id)}" type="button" style="height:36px;padding:0 14px" ${u.online ? '' : 'disabled'}><svg><use href="#i-sync"/></svg>Sync</button>`}
     </li>`;
   const wirePeople = (root) => root.querySelectorAll('[data-sync]').forEach((b) => b.onclick = () => invite(b.dataset.sync));
@@ -496,13 +496,66 @@
       <button class="back" type="button" data-back><svg><use href="#i-back"/></svg>Back</button>
       <section class="section" style="margin-top:8px;display:flex;gap:16px;align-items:center">
         ${avatar(user, 'lg')}
-        <div style="flex:1;min-width:0"><h1 style="font-size:26px">${esc(user.name)}</h1><div class="muted">@${esc(user.id)}${user.online ? ' · online' : ''}${user.sample ? ' · sample profile' : ''}</div></div>
+        <div style="flex:1;min-width:0"><h1 style="font-size:26px">${esc(user.name)}</h1><div class="muted">@${esc(user.id)}${user.online ? ' · online' : ''}${user.sample ? ' · sample profile' : ''}</div>${user.bio ? `<p class="bio" style="margin:6px 0 0;color:var(--muted);font-size:14px">${esc(user.bio)}</p>` : ''}</div>
       </section>
+      ${user.mood || user.moodTrack ? `<section class="section" style="margin-top:14px">${moodCard(user, false)}</section>` : ''}
       ${user.sample ? '' : `<div class="section" style="margin-top:16px"><button class="btn primary" id="syncU" type="button" ${user.online ? '' : 'disabled'}><svg><use href="#i-sync"/></svg>${user.online ? `Sync with @${esc(user.id)}` : `@${esc(user.id)} is offline`}</button></div>`}
       <section class="section"><div class="section-head"><h2>Playlists</h2></div>
         ${playlists.length ? `<div class="feed">${playlists.map(feedCard).join('')}</div>` : `<div class="empty-state">@${esc(user.id)} hasn't made a playlist yet.</div>`}
       </section>`;
     $('#syncU') && ($('#syncU').onclick = () => invite(user.id));
+    wireMood(user, false);
+  }
+
+  // ---------- mood ----------
+  // A short "what's on my mind" line and an optional song, under the profile picture.
+  const MOOD_CHIPS = ['Chilled', 'Hyped', 'In my feels', 'Focused', 'Party mode', 'Heartbroken', 'Grateful'];
+  function moodCard(u, own) {
+    if (!u.mood && !u.moodTrack) {
+      return own ? `<button class="mood-card empty" id="setMood" type="button"><span class="mood-q">What's on your mind?</span><span class="link-btn">Set your mood</span></button>` : '';
+    }
+    const t = u.moodTrack;
+    return `<div class="mood-card">
+      ${u.mood ? `<p class="mood-text">${esc(u.mood)}</p>` : ''}
+      ${t ? `<div class="mood-song"><img src="${art(t)}" alt=""><div style="min-width:0"><div class="pm-title">${esc(t.title)}</div><div class="pm-sub">${srcTag(t)}${esc(t.author)}</div></div>
+        <button class="play-mini" id="playMood" type="button" aria-label="Play ${esc(t.title)}"><svg><use href="#i-play"/></svg></button></div>` : ''}
+      <div class="mood-meta">${u.moodAt ? ago(u.moodAt) : ''}${own ? `<button class="link-btn" id="setMood" type="button">Change</button>` : ''}</div>
+    </div>`;
+  }
+  function wireMood(u, own) {
+    $('#setMood') && ($('#setMood').onclick = () => editMood());
+    $('#playMood') && ($('#playMood').onclick = () => {
+      const t = u.moodTrack;
+      // In a party it goes through the request flow (DJs' picks play next); otherwise it just plays.
+      if (room?.party) { send({ type: 'request', source: t.source, sourceId: t.sourceId }); toast(canControl() ? `"${t.title}" plays next.` : `Requested "${t.title}". The host will see it.`); }
+      else playQueue([t], 0, null);
+    });
+  }
+  // state carries the half-written mood across the song picker (which opens its own sheet).
+  function editMood(state = { mood: me.mood || '', track: me.moodTrack || null }) {
+    sheet(`
+      <div class="sheet-top"><h2>Your mood</h2><button class="icon-btn" data-close aria-label="Close"><svg><use href="#i-close"/></svg></button></div>
+      <div class="field"><label for="mdText">What's on your mind?</label><input class="input" id="mdText" maxlength="80" value="${esc(state.mood)}" placeholder="Need something to dance to" autocomplete="off"></div>
+      <div class="chips">${MOOD_CHIPS.map((c) => `<button class="chip" type="button" data-chip="${esc(c)}">${esc(c)}</button>`).join('')}</div>
+      <div class="field"><label>Mood song</label>
+        ${state.track ? `<div class="mood-song"><img src="${art(state.track)}" alt=""><div style="min-width:0"><div class="pm-title">${esc(state.track.title)}</div><div class="pm-sub">${esc(state.track.author)}</div></div><button class="link-btn" id="mdPick" type="button">Change</button><button class="link-btn" id="mdNoSong" type="button" style="color:var(--muted)">Remove</button></div>`
+          : '<button class="btn" id="mdPick" type="button"><svg><use href="#i-plus"/></svg>Pick a song</button>'}
+      </div>
+      <p class="small muted" style="margin:0">Everyone who opens your profile sees this, and can play your mood song.</p>
+      <div class="error" id="mdErr"></div>
+      <div class="row-actions"><button class="btn" id="mdClear" type="button" style="flex:1">Clear mood</button><button class="btn primary" id="mdSave" type="button" style="flex:1">Save</button></div>`,
+    (el, close) => {
+      const text = $('#mdText', el);
+      el.querySelectorAll('[data-chip]').forEach((c) => c.onclick = () => { text.value = c.dataset.chip; text.focus(); });
+      $('#mdPick', el).onclick = () => pickSong('Pick a mood song', (t) => editMood({ mood: text.value, track: t }));
+      $('#mdNoSong', el) && ($('#mdNoSong', el).onclick = () => editMood({ mood: text.value, track: null }));
+      const save = async (body, msg) => {
+        try { me = { ...me, ...(await api('/api/me', { method: 'PATCH', body })) }; close(); toast(msg); route(); }
+        catch (e) { $('#mdErr', el).textContent = e.message; }
+      };
+      $('#mdSave', el).onclick = () => save({ mood: text.value, moodTrack: state.track ? { source: state.track.source, sourceId: state.track.sourceId } : null }, 'Mood updated.');
+      $('#mdClear', el).onclick = () => save({ mood: '', moodTrack: null }, 'Mood cleared.');
+    });
   }
 
   // ---------- sync tab ----------
@@ -569,15 +622,92 @@
             ${isHost ? `<button class="btn" id="togglePublic" type="button">${room.public ? 'Make invite-only' : 'Make public'}</button>` : ''}
           </div>
           ${!room.public && !isHost ? '<p class="small muted" style="margin:0">Only the host can open this party to everyone.</p>' : ''}
-          ${st.track ? `<div class="preview" style="background:none;padding:0"><img src="${art(st.track)}" alt=""><div style="min-width:0"><div class="pm-title">${esc(st.track.title)}</div><div class="pm-sub">${esc(st.track.author)} · ${st.playing ? 'playing' : 'paused'}</div></div></div>` : `<p class="muted" style="margin:0">Nothing playing yet. Open any playlist and tap <b>Play for the sync</b>.</p>`}
+          ${st.track ? `<div class="preview" style="background:none;padding:0"><img src="${art(st.track)}" alt=""><div style="min-width:0"><div class="pm-title">${esc(st.track.title)}</div><div class="pm-sub">${esc(st.track.author)} · ${st.playing ? 'playing' : 'paused'}${st.track.requestedBy ? ` · requested by @${esc(st.track.requestedBy)}` : ''}</div></div></div>`
+            : `<p class="muted" style="margin:0">${canControl() ? 'Nothing playing yet. Add a song, or open a playlist and tap <b>Play for the sync</b>.' : 'Nothing playing yet. Request a song to get it going.'}</p>`}
+          ${room.party ? `<button class="btn ${canControl() ? '' : 'primary'} block" id="reqSong" type="button"><svg><use href="#i-plus"/></svg>${canControl() ? 'Add a song' : 'Request a song'}</button>
+            <p class="small muted" style="margin:0">${canControl() ? (isHost ? 'You host this party. You and your DJs control the music.' : "You're a DJ. You can play music freely.") : 'The host and their DJs control the music. Your requests go to them.'}</p>` : ''}
+          ${requestsHtml()}
           <ul class="people">
-            ${room.members.map((m) => `<li class="person">${avatar(m)}<div class="who"><div class="n">${m.id === me.id ? 'You' : esc(m.name)}</div><div class="h">@${esc(m.id)}${m.id === room.host ? (room.party ? ' · host' : ' · started the sync') : ''}</div></div></li>`).join('')}
+            ${room.members.map((m) => {
+              const dj = (room.djs || []).includes(m.id);
+              const role = m.id === room.host ? (room.party ? ' · host' : ' · started the sync') : dj ? ' · DJ' : '';
+              const djBtn = room.party && isHost && m.id !== me.id ? `<button class="btn dj-btn" data-dj="${esc(m.id)}" data-on="${!dj}" type="button">${dj ? 'Remove DJ' : 'Make DJ'}</button>` : '';
+              return `<li class="person">${avatar(m)}<div class="who"><div class="n">${m.id === me.id ? 'You' : esc(m.name)}${dj ? ' <span class="tag dj">DJ</span>' : ''}</div><div class="h">@${esc(m.id)}${role}</div></div>${djBtn}</li>`;
+            }).join('')}
             ${room.pending.map((id) => `<li class="person pending">${avatar({ id, name: id })}<div class="who"><div class="n">@${esc(id)}</div><div class="h">Waiting for them to accept</div></div></li>`).join('')}
           </ul>
         </div>`;
     $('#leave').onclick = () => send({ type: 'leave' });
     $('#shareParty') && ($('#shareParty').onclick = () => shareParty(room));
     $('#togglePublic') && ($('#togglePublic').onclick = () => send({ type: 'party', public: !room.public }));
+    $('#reqSong') && ($('#reqSong').onclick = requestSong);
+    el.querySelectorAll('[data-dj]').forEach((b) => b.onclick = () => send({ type: 'dj', to: b.dataset.dj, on: b.dataset.on === 'true' }));
+    el.querySelectorAll('[data-approve]').forEach((b) => b.onclick = () => send({ type: 'approve', id: b.dataset.approve, now: b.dataset.now === '1' }));
+    el.querySelectorAll('[data-decline]').forEach((b) => b.onclick = () => send({ type: 'decline', id: b.dataset.decline }));
+  }
+
+  // ---------- who controls the music ----------
+  // Invite syncs: everyone. Parties: the host and their DJs; others request songs.
+  const canControl = () => !room || !room.party || room.host === me?.id || (room.djs || []).includes(me?.id);
+  function requestsHtml() {
+    const reqs = room?.requests || [];
+    if (!room?.party || !reqs.length) return '';
+    if (canControl()) {
+      return `<div class="requests"><div class="n">Requests · ${reqs.length}</div>${reqs.map((q) => `
+        <div class="req">${`<img src="${art(q.track)}" alt="">`}<div style="min-width:0"><div class="pm-title">${esc(q.track.title)}</div><div class="pm-sub">${esc(q.track.author)} · from @${esc(q.from)}</div></div>
+          <div class="req-actions"><button class="btn primary" data-approve="${q.id}" type="button">Play next</button><button class="btn" data-approve="${q.id}" data-now="1" type="button">Now</button><button class="icon-btn" data-decline="${q.id}" type="button" aria-label="Decline ${esc(q.track.title)}"><svg><use href="#i-close"/></svg></button></div></div>`).join('')}</div>`;
+    }
+    const mine = reqs.filter((q) => q.from === me.id);
+    return mine.length ? `<div class="requests"><div class="n">Your requests</div>${mine.map((q) => `<div class="req"><img src="${art(q.track)}" alt=""><div style="min-width:0"><div class="pm-title">${esc(q.track.title)}</div><div class="pm-sub">Waiting for the host</div></div></div>`).join('')}</div>` : '';
+  }
+  function requestSong() {
+    const dj = canControl();
+    pickSong(dj ? 'Add a song to the party' : 'Request a song', (t) => {
+      send({ type: 'request', source: t.source, sourceId: t.sourceId });
+      toast(dj ? `"${t.title}" plays next.` : `Requested "${t.title}". The host will see it.`);
+    }, dj ? 'It plays after the current song.' : 'The host or a DJ approves requests.');
+  }
+
+  // A sheet to find one song: search any source, or tap something from Fresh finds.
+  async function pickSong(title, onPick, note = '') {
+    await loadConfig();
+    const sources = ['yt', 'au', 'jm'].filter((s) => s === 'yt' || config.sources?.[s]);
+    sheet(`
+      <div class="sheet-top"><h2>${esc(title)}</h2><button class="icon-btn" data-close aria-label="Close"><svg><use href="#i-close"/></svg></button></div>
+      <div class="seg" role="tablist" aria-label="Where to search" style="--n:${sources.length}">${sources.map((s) => `<button type="button" role="tab" data-src="${s}" aria-selected="false">${SOURCE_NAME[s]}</button>`).join('')}</div>
+      <input class="input" id="psq" placeholder="Search a song or paste a link" autocapitalize="none" autocomplete="off" aria-label="Search">
+      <div id="psres"></div><div class="error" id="pserr"></div>
+      ${note ? `<p class="muted small" style="margin:0">${esc(note)}</p>` : ''}`,
+    (el, close) => {
+      const q = $('#psq', el), out = $('#psres', el), err = $('#pserr', el);
+      let source = sources.includes(store.get('aux-src')) ? store.get('aux-src') : 'yt', shown = [], t, seq = 0;
+      const show = (list, heading = '') => {
+        shown = list;
+        out.innerHTML = `${heading ? `<div class="small muted" style="margin-bottom:4px">${heading}</div>` : ''}<ul class="results">${list.map((s, i) => `<li class="pickable" data-i="${i}" tabindex="0" role="button"><img src="${art(s)}" alt=""><div style="min-width:0"><div class="pm-title">${esc(s.title)}</div><div class="pm-sub">${s.official ? '<span class="tag">Song</span> ' : ''}${srcTag(s)}${esc(s.author)}</div></div><span class="pick-go"><svg><use href="#i-plus"/></svg></span></li>`).join('')}</ul>`;
+        out.querySelectorAll('[data-i]').forEach((li) => {
+          const go = () => { close(); onPick(shown[+li.dataset.i]); };
+          li.onclick = go; li.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } };
+        });
+      };
+      const fresh = () => api('/api/discover').then(({ tracks }) => { if (!q.value.trim() && tracks.length) show(tracks.slice(0, 8), 'Fresh finds'); }).catch(() => {});
+      async function lookup() {
+        err.textContent = ''; const v = q.value.trim();
+        if (!v) return fresh();
+        const mySeq = ++seq;
+        try {
+          if (/^https?:\/\/|youtu\.?be|audius\.co|jamendo\.com|^[\w-]{11}$/.test(v)) { const s = await api(`/api/resolve?url=${encodeURIComponent(v)}`); if (mySeq === seq) show([s]); return; }
+          const r = await api(`/api/search?source=${source}&q=${encodeURIComponent(v)}`);
+          if (mySeq !== seq) return;
+          if (!r.enabled) { out.innerHTML = ''; err.textContent = 'YouTube search is off. Paste a link instead.'; return; }
+          if (!r.results.length) { out.innerHTML = ''; err.textContent = `Nothing found on ${SOURCE_NAME[source]}.`; return; }
+          show(r.results);
+        } catch (e) { if (mySeq === seq) { out.innerHTML = ''; err.textContent = e.message; } }
+      }
+      el.querySelectorAll('[data-src]').forEach((b) => b.onclick = () => { source = b.dataset.src; store.set('aux-src', source); el.querySelectorAll('[data-src]').forEach((x) => x.setAttribute('aria-selected', x === b)); lookup(); });
+      el.querySelector(`[data-src="${source}"]`)?.setAttribute('aria-selected', 'true');
+      q.oninput = () => { clearTimeout(t); t = setTimeout(lookup, 350); };
+      q.focus(); fresh();
+    });
   }
 
   // ---------- parties ----------
@@ -693,6 +823,7 @@
         <div class="who"><h1>${esc(me.name)}</h1><div class="muted">@${esc(me.id)}</div>${me.bio ? `<p class="bio">${esc(me.bio)}</p>` : ''}</div>
         <button class="btn" id="editMe" type="button">Edit</button>
       </section>
+      <section class="section" style="margin-top:14px">${moodCard(me, true)}</section>
       <section class="section">
         <div class="sync-card" style="flex-direction:row;align-items:center;gap:16px">
           <div style="font-family:var(--font-display);font-size:40px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums">${me.credits}</div>
@@ -719,6 +850,7 @@
     view.querySelectorAll('[data-theme-id]').forEach((b) => b.onclick = () => { setTheme(b.dataset.themeId); view.querySelectorAll('[data-theme-id]').forEach((x) => x.setAttribute('aria-pressed', x === b)); });
     $('#signOut').onclick = signOut;
     $('#editMe').onclick = editProfile;
+    wireMood(me, true);
     $('#exportMe').onclick = exportData;
     $('#delMe').onclick = deleteAccount;
     loadDevices();
@@ -955,6 +1087,11 @@
 
   // Apply an action locally (solo) or send it to the room (synced).
   function act(m) {
+    if (room && !canControl()) {
+      // Song-ended reports are fine to drop: the host's and DJs' phones move the party on.
+      if (!(m.type === 'next' && Number.isInteger(m.from))) toast('The host and DJs control the music here. Tap Request a song instead.');
+      return;
+    }
     if (room) return send(m);
     const st = engine.state;
     if (m.type === 'load') Object.assign(st, { queue: m.queue, index: m.index, playlistId: m.playlistId, track: m.queue[m.index], playing: true, position: 0, ref: Date.now() });
@@ -971,6 +1108,13 @@
   }
   // discover: the queue is the Discover row, which the server can rebuild for a sync.
   function playQueue(queue, index, playlistId, discover = false) {
+    // A listener in a party picks a song: that becomes a request to the host.
+    if (room && !canControl()) {
+      const t = queue[index]; if (!t) return;
+      send({ type: 'request', source: t.source, sourceId: t.sourceId });
+      toast(`Requested "${t.title}". The host will see it.`);
+      return;
+    }
     act({ type: 'load', queue, index, playlistId, discover });
     if (!room) expandPlayer();
   }
@@ -1178,8 +1322,13 @@
     $('#lyBtn').hidden = !t || !config?.lyrics;
     $('#pmSub').textContent = room ? `In sync with ${room.members.filter((m) => m.id !== me?.id).map((m) => '@' + m.id).join(', ') || 'no one yet'}` : (t?.author || '');
     $('#sheetLabel').textContent = room ? 'Playing in sync' : 'Now playing';
-    $('#syncStrip').innerHTML = room ? `<div class="strip-top"><div class="stack">${room.members.map((m) => avatar(m, 'sm')).join('')}</div><div style="flex:1;min-width:0"><div class="live-pill">In sync</div><div class="small muted">Everyone controls play, pause and skip.</div></div><a class="link-btn" href="#sync">Chat</a></div>${reactBar()}` : '';
+    const control = canControl();
+    P.classList.toggle('locked', !control);
+    const who = !room?.party ? 'Everyone controls play, pause and skip.' : control ? 'You can control the music.' : 'The host and DJs control the music.';
+    $('#syncStrip').innerHTML = room ? `<div class="strip-top"><div class="stack">${room.members.map((m) => avatar(m, 'sm')).join('')}</div><div style="flex:1;min-width:0"><div class="live-pill">${room.party ? esc(room.name) : 'In sync'}</div><div class="small muted">${who}</div></div><a class="link-btn" href="#sync">Chat</a></div>
+      ${room.party ? `<button class="btn block" id="stripReq" type="button"><svg><use href="#i-plus"/></svg>${control ? 'Add a song' : 'Request a song'}</button>` : ''}${reactBar()}` : '';
     if (room) wireReactBar($('#syncStrip'));
+    $('#stripReq') && ($('#stripReq').onclick = requestSong);
     $('#queueList').innerHTML = st.queue.map((s, i) => `<li data-q="${i}" class="${i === st.index ? 'cur' : ''}"><span class="n">${i + 1}</span><img src="${art(s)}" alt=""><div style="min-width:0"><div class="qt">${esc(s.title)}</div><div class="qa">${esc(s.author)}</div></div></li>`).join('');
     $('#queueList').querySelectorAll('[data-q]').forEach((li) => li.onclick = () => act({ type: 'load', queue: st.queue, index: +li.dataset.q, playlistId: st.playlistId }));
     if ('mediaSession' in navigator && t) navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.author, album: 'Aux', artwork: t.art ? [{ src: t.art, sizes: '480x480', type: 'image/jpeg' }] : [] });
