@@ -20,7 +20,7 @@ Home has a **Fresh finds** row of trending Audius (and Jamendo) songs, which the
 - **Likes:** anyone can like a song. When a playlist's owner likes a song someone else added, that person earns 1 credit (once per song), and it shows as **Owner's pick**.
 - **Inbox:** saves "added a song" and "liked your pick" notes. When the person is offline, they also get a **web push** notification if they turned notifications on. Pushes carry no content: the service worker fetches the newest note from `/api/push/latest`.
 - **Account:** edit name, bio and photo; change your @ID (once every 30 days); see devices and sign them out; download your data; delete your account.
-- **Legal pages:** `/privacy` and `/terms`. Fill in the operator name and contact email placeholders before launch.
+- **Legal pages:** `/privacy` and `/terms`.
 
 ## Stack
 
